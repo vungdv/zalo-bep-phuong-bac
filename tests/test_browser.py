@@ -69,8 +69,9 @@ def test_ensure_open_treats_closed_or_other_session_as_missing(tmp_path: Path) -
 
 
 def test_list_output_not_json_is_eval_error(tmp_path: Path) -> None:
-    with pytest.raises(EvalError):
+    with pytest.raises(EvalError) as info:
         make(FakeRunner("### Browsers"), tmp_path).ensure_open()
+    assert "Browsers" not in str(info.value)
 
 
 def test_eval_json_passes_script_as_one_argv_element_without_shell(tmp_path: Path) -> None:
@@ -90,8 +91,19 @@ def test_eval_json_decodes_a_json_string_result(tmp_path: Path) -> None:
 
 
 def test_eval_json_error_on_non_json_output(tmp_path: Path) -> None:
-    with pytest.raises(EvalError, match="non-JSON"):
+    with pytest.raises(EvalError, match="non-JSON") as info:
         make(FakeRunner("Error: page crashed"), tmp_path).eval_json("() => 1")
+    assert "page crashed" not in str(info.value)  # raw output may hold chat content [R6.1]
+    assert info.value.__cause__ is None and info.value.__suppress_context__
+
+
+def test_non_json_output_is_only_quoted_at_debug(tmp_path: Path, caplog) -> None:
+    out = 'notice\n{"title": "Nhóm Khách Sỉ Test"}'
+    with caplog.at_level("DEBUG", logger="order_extractor"), pytest.raises(EvalError) as info:
+        make(FakeRunner(out), tmp_path).eval_json("() => 1")
+    assert "Nhóm" not in str(info.value) and f"{len(out)} chars" in str(info.value)
+    (record,) = [r for r in caplog.records if r.getMessage() == "eval_output_unparsable"]
+    assert record.levelname == "DEBUG" and "Nhóm" in record.head
 
 
 def test_eval_nonzero_exit_is_browser_error(tmp_path: Path) -> None:

@@ -7,7 +7,9 @@
 * Handlers: stderr (WARNING+) and `LOG_DIR/app.jsonl` (INFO+, rotated at midnight, `RETENTION_DAYS` kept).
   Nothing is ever written to stdout (the status line owns it).
 * Privacy guard: the extras `text`, `sender`, `conversation_title` and `title` are emitted only on DEBUG records;
-  at INFO and above they are dropped by the formatter.
+  at INFO and above they are dropped by the formatter. Likewise an exception's message (`str(exc)`, which may
+  quote chat content) is written only at DEBUG: above DEBUG a record carries `exc_type` and the traceback frames
+  (file, line, function, source line) of each chained exception, but no exception message [R6.1].
 
 Usage::
 
@@ -21,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import traceback
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -83,9 +86,36 @@ class JsonFormatter(logging.Formatter):
             if key in SENSITIVE_FIELDS and not debug:
                 continue
             payload[key] = value
-        if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
+        if record.exc_info and record.exc_info[0] is not None:
+            if debug:
+                payload["exc"] = self.formatException(record.exc_info)
+            else:
+                payload["exc_type"] = _type_name(record.exc_info[0])
+                payload["exc"] = _redacted_traceback(record.exc_info[1])
         return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _type_name(exc_type: type[BaseException]) -> str:
+    module = exc_type.__module__
+    return exc_type.__qualname__ if module == "builtins" else f"{module}.{exc_type.__qualname__}"
+
+
+def _redacted_traceback(exc: BaseException | None) -> str:
+    """The traceback of `exc` and its causes/contexts, with each exception's type but never its message."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        chain.append(exc)
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+    parts: list[str] = []
+    for item in reversed(chain):
+        if parts:
+            parts.append("\nThe above exception was followed by:\n\n")
+        parts.append("Traceback (most recent call last):\n")
+        parts.extend(traceback.format_tb(item.__traceback__))
+        parts.append(f"{_type_name(type(item))}\n")
+    return "".join(parts).rstrip("\n")
 
 
 def get_logger(name: str = ROOT_LOGGER) -> logging.Logger:

@@ -40,7 +40,10 @@ class BrowserTimeout(BrowserError):
 
 
 class EvalError(BrowserError):
-    """`eval` succeeded but its output is not the JSON the caller expected."""
+    """`eval` succeeded but its output is not the JSON the caller expected.
+
+    The message never contains the raw output: it can hold chat titles, names and message text [R6.1]. The first
+    characters are logged at DEBUG only."""
 
 
 @dataclass(frozen=True)
@@ -136,7 +139,7 @@ class BrowserDriver:
         try:
             browsers = json.loads(out).get("browsers", [])
         except (json.JSONDecodeError, AttributeError) as exc:
-            raise EvalError(f"unexpected `list --json` output: {out[:200]!r}") from exc
+            raise EvalError(f"unexpected `list --json` output ({len(out)} chars)") from exc
         return any(b.get("name") == self.session and b.get("status") == "open" for b in browsers)
 
     def ensure_open(self) -> None:
@@ -160,8 +163,9 @@ class BrowserDriver:
             value = json.loads(out)
             if isinstance(value, str):
                 value = json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise EvalError(f"eval returned non-JSON output: {out[:200]!r}") from exc
+        except json.JSONDecodeError:
+            log.debug("eval_output_unparsable", extra={"length": len(out), "head": out[:200]})
+            raise EvalError(f"eval returned non-JSON output ({len(out)} chars)") from None
         self.consecutive_failures = 0
         return value
 

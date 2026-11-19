@@ -84,13 +84,53 @@ def test_nothing_on_stdout_and_only_warnings_on_stderr(configured, capsys):
     assert [json.loads(line)["event"] for line in err.splitlines()] == ["loud"]
 
 
-def test_exceptions_are_serialised(configured):
+TITLE, TEXT = "Nhóm Khách Sỉ Test", "cho em 2 áo"  # kept out of the raising lines: frames quote source code
+
+
+def test_exceptions_above_debug_carry_type_and_frames_but_no_message(configured):
+    def inner(title):
+        raise KeyError(title)
+
     try:
-        raise ValueError("boom")
+        try:
+            inner(TITLE)
+        except KeyError as exc:
+            raise ValueError(TEXT) from exc
     except ValueError:
         get_logger().exception("crashed")
     (line,) = read_lines(configured)
-    assert "ValueError: boom" in line["exc"]
+    assert line["exc_type"] == "ValueError"
+    assert "in inner" in line["exc"] and "test_telemetry.py" in line["exc"]  # frames kept
+    assert "KeyError" in line["exc"] and line["exc"].endswith("ValueError")
+    dumped = json.dumps(line, ensure_ascii=False)
+    assert TITLE not in dumped and TEXT not in dumped
+
+
+def test_exception_type_names_include_the_module_outside_builtins(configured):
+    from order_extractor.zalo.browser import EvalError
+
+    secret = "".join(["sec", "ret"])
+    try:
+        raise EvalError(secret)
+    except EvalError:
+        get_logger().error("failed", exc_info=True)
+    (line,) = read_lines(configured)
+    assert line["exc_type"] == "order_extractor.zalo.browser.EvalError"
+    assert secret not in line["exc"].replace("EvalError(secret)", "")
+
+
+def test_exceptions_at_debug_are_serialised_in_full(tmp_path):
+    root = configure_logging(tmp_path, level=logging.DEBUG)
+    try:
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            get_logger().debug("crashed", exc_info=True)
+        (line,) = read_lines(tmp_path / telemetry.LOG_FILE_NAME)
+        assert "ValueError: boom" in line["exc"]
+        assert "exc_type" not in line
+    finally:
+        _reset(root)
 
 
 def test_file_handler_rotates_daily_and_keeps_retention(configured):

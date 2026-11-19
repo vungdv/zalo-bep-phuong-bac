@@ -247,12 +247,6 @@ async def test_r6_4_status_line_shows_state_conversation_and_counts(db: Path):
         assert part in last, (part, last)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: if `playwright-cli eval` prints anything besides the JSON (e.g. a notice line), EvalError embeds "
-    "the first 200 chars of the reader output, which hold the conversation title, and ZaloWeb logs it at ERROR "
-    "to app.jsonl and stderr (zalo/browser.py:164, zalo/zalo_web.py:339; R6.1, design §8)",
-)
 async def test_r6_1_chat_content_never_reaches_the_logs_when_the_reader_output_is_unparsable(db: Path, chromium, capfd):
     """R6.1 / design §8: even when the browser output cannot be parsed, chat titles, sender names and message text
     are not written to the logs above DEBUG."""
