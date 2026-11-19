@@ -240,6 +240,7 @@ class Orchestrator:
 
     def notify(self, event: Event) -> None:
         """Route one event to its handler (design §1 event catalogue). Synchronous; never blocks on the network."""
+        print(f"[DEBUG] event: {event!r}", flush=True)  # TEMP debug: remove when done
         handler = self._routes.get(type(event))
         if handler is None:
             log.warning("event_unrouted", extra={"event_type": event.type})
