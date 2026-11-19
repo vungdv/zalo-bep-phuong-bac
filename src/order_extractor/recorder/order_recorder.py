@@ -14,6 +14,11 @@ Events: `OrderRecorded` (appended, or found in column A with `sheet_row=None`), 
 append: retry scheduled, or `final=True` when the order became FAILED), `RecorderBlocked` (header mismatch; the
 recorder then does nothing more).
 
+Duplicate-row guard [R5.5]: once `append_rows` returns, the ids go into `written` (the in-memory column A) first,
+then every order is marked RECORDED in one transaction, and only then is `OrderRecorded` emitted. So an error in
+a later step (a failing mediator, a DB error) can never make the next job append the same order again. As a
+second line of defence, any unexpected job error makes the next flush re-read column A before appending.
+
 The blocking gspread calls run via `asyncio.to_thread`; the coroutine resumes on the loop, so every SQLite write
 and every `notify` stays on the loop thread. Clock and randomness are injected for deterministic tests.
 """
@@ -83,6 +88,7 @@ class OrderRecorder(Colleague):
         self._job_kind: JobState = "idle"
         self._prepare_failures = 0
         self._prepare_not_before_ms = 0
+        self._reread_column_a = False  # set by an unexpected job error: `written` may be stale
 
     @classmethod
     def from_settings(
@@ -186,6 +192,7 @@ class OrderRecorder(Colleague):
         try:
             await coro
         except Exception:
+            self._reread_column_a = True  # the job may have stopped between the append and its bookkeeping
             log.exception("recorder_job_crashed", extra={"job": kind})
 
     async def _prepare(self) -> None:
@@ -219,26 +226,31 @@ class OrderRecorder(Colleague):
         log.info("sheet_ready", extra={"reconciled": len(found), "column_a_ids": len(written)})
 
     async def _flush(self, due: Sequence[Order]) -> None:
-        """Append the due orders in one call; re-read column A first if any is a retry [R5.5, R5.6]."""
+        """Append the due orders in one call; re-read column A first if any is a retry, or after an unexpected
+        job error [R5.5, R5.6]."""
         todo = list(due)
         try:
-            if any(o.attempts > 0 for o in due):  # an earlier attempt may have landed (lost response)
+            if self._reread_column_a or any(o.attempts > 0 for o in due):  # an earlier attempt may have landed
                 self.written = await asyncio.to_thread(self.sheet.read_order_ids)
+                self._reread_column_a = False
             landed = [o for o in due if str(o.id) in self.written]
-            for o in landed:
-                self.repo.mark_recorded(o.id, None)
-                log.info("order_reconciled", extra={"order_id": o.id, "attempt": o.attempts})
-                self.mediator.notify(OrderRecorded(order_id=o.id, sheet_row=None))
             todo = [o for o in due if str(o.id) not in self.written]
+            if landed:
+                self.repo.mark_recorded_many(o.id for o in landed)
+                for o in landed:
+                    log.info("order_reconciled", extra={"order_id": o.id, "attempt": o.attempts})
+                    self.mediator.notify(OrderRecorded(order_id=o.id, sheet_row=None))
             if not todo:
                 return
             rows = await asyncio.to_thread(self.sheet.append_rows, todo)
         except SheetsError as exc:
             self._on_failure(todo, exc)
             return
+        # The rows are in the sheet: remember that first, then persist it in one transaction, then announce it.
+        self.written.update(str(o.id) for o in todo)
+        recorded = list(zip((o.id for o in todo), rows, strict=True))
+        self.repo.mark_recorded_rows(recorded)
         for o, row in zip(todo, rows, strict=True):
-            self.repo.mark_recorded(o.id, row)
-            self.written.add(str(o.id))
             log.info("order_recorded", extra={"order_id": o.id, "sheet_row": row, "attempt": o.attempts + 1})
             self.mediator.notify(OrderRecorded(order_id=o.id, sheet_row=row))
 

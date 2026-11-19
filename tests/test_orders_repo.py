@@ -169,3 +169,22 @@ def test_purge_boundary_is_strictly_before_cutoff(repo):
     repo.mark_recorded(1)
     assert repo.purge(NOW, retention_days=30) == 0
     assert repo.purge(NOW + 1, retention_days=30) == 1
+
+
+def test_mark_recorded_rows_sets_each_row_in_one_transaction(repo):
+    for n in range(1, 4):
+        repo.store(new_order(n), NOW)
+    repo.mark_recorded_rows([(1, 2), (2, None)])
+    assert [(o.id, o.status, o.sheet_row) for o in repo.orders_for_ids([1, 2, 3])] == [
+        (1, "RECORDED", 2),
+        (2, "RECORDED", None),
+        (3, "NEW", None),
+    ]
+
+    def interrupted():
+        yield (3, 4)
+        raise RuntimeError("interrupted")
+
+    with pytest.raises(RuntimeError):
+        repo.mark_recorded_rows(interrupted())
+    assert repo.get(3).status == "NEW"  # rolled back: all or nothing

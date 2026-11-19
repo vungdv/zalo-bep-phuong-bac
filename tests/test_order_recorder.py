@@ -398,6 +398,66 @@ async def test_unexpected_error_is_logged_and_does_not_kill_the_recorder(mediato
     assert repo.get(1).status == "NEW"
 
 
+class BrokenPipeMediator(FakeMediator):
+    """Raises `BrokenPipeError` on the first `OrderRecorded` (e.g. the status line's stdout went away)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.raised = False
+
+    def notify(self, event) -> None:
+        super().notify(event)
+        if isinstance(event, OrderRecorded) and not self.raised:
+            self.raised = True
+            raise BrokenPipeError("stdout closed")
+
+
+async def test_error_after_append_never_duplicates_rows(repo, sheet, clock, caplog):
+    mediator = BrokenPipeMediator()
+    recorder = make(mediator, repo, sheet, clock)
+    await ready(recorder)
+    for n in range(1, 4):
+        recorder.store(new_order(n))
+    await run(recorder)
+    assert any(r.getMessage() == "recorder_job_crashed" for r in caplog.records)
+    assert sheet.column_a == ["1", "2", "3"]
+    assert repo.counts() == {"NEW": 0, "RECORDED": 3, "FAILED": 0}  # all marked before the first notify
+    assert [o.sheet_row for o in repo.orders_for_ids([1, 2, 3])] == [2, 3, 4]
+
+    for _ in range(3):
+        clock.advance(10_000)
+        await run(recorder)
+    assert sheet.column_a == ["1", "2", "3"]
+    assert sheet.count("append_rows") == 1
+
+
+async def test_unexpected_error_makes_the_next_flush_reread_column_a(mediator, repo, sheet, clock):
+    recorder = make(mediator, repo, sheet, clock)
+    await ready(recorder)
+    recorder.store(new_order(1))
+    real_append = sheet.append_rows
+
+    def lands_then_breaks(orders):
+        real_append(orders)
+        raise RuntimeError("bug after the write")  # not a SheetsError: written/DB were never updated
+
+    sheet.append_rows = lands_then_breaks
+    await run(recorder)
+    assert repo.get(1).status == "NEW" and repo.get(1).attempts == 0
+    sheet.append_rows = real_append
+    reads = sheet.count("read_order_ids")
+    await run(recorder)
+    assert sheet.count("read_order_ids") == reads + 1
+    assert sheet.column_a == ["1"]  # found in column A: reconciled, not appended again
+    assert repo.get(1).status == "RECORDED"
+    assert mediator.of_type(OrderRecorded)[-1] == OrderRecorded(order_id=1, sheet_row=None)
+
+    recorder.store(new_order(2))
+    await run(recorder)
+    assert sheet.count("read_order_ids") == reads + 1  # flag cleared after the successful re-read
+    assert sheet.column_a == ["1", "2"]
+
+
 # --- off-loop, one job in flight [R5.6, NFR1] ---------------------------------------------------------------
 
 

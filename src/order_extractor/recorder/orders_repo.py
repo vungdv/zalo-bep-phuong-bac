@@ -148,9 +148,13 @@ class OrdersRepo:
 
     def mark_recorded_many(self, order_ids: Iterable[int]) -> None:
         """`mark_recorded(id, None)` for each id, in one transaction (column-A reconciliation)."""
+        self.mark_recorded_rows((order_id, None) for order_id in order_ids)
+
+    def mark_recorded_rows(self, recorded: Iterable[tuple[int, int | None]]) -> None:
+        """`mark_recorded(id, sheet_row)` for each `(id, sheet_row)` pair, in one transaction [R5.5]."""
         with transaction(self.conn):
-            for order_id in order_ids:
-                self.mark_recorded(order_id, None)
+            for order_id, sheet_row in recorded:
+                self.mark_recorded(order_id, sheet_row)
 
     # --- reads ----------------------------------------------------------------------------------------------
 
