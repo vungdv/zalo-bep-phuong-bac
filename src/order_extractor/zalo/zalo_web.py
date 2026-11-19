@@ -7,6 +7,10 @@ Public API (called by the Orchestrator):
   `NewMessages` for newly stored unchecked messages, `SelectorDrift`, or `BrowserDied`.
 * `mark_checked(conversation_key, keys)` — reaction to `MessagesChecked` [R3.4].
 * `recover()` — re-emit unchecked messages after a restart, per conversation, in chunks of 100 [R3.5].
+* `purge(now_ms)` — retention purge of messages, senders and DOM snapshots [R6.3].
+
+Backfill runs on the first READING poll of a conversation in this run (also after a restart or a switch) and as
+catch-up when the list returns to the bottom with a gap [R2.4, R2.5, R2.12]. Every screen goes through `ingest`.
 
 Messages are committed before `NewMessages` is emitted (persist before notify).
 """
@@ -15,6 +19,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterable
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -39,6 +44,10 @@ from order_extractor.zalo.reader import PageState, ReaderMessage
 log = get_logger(__name__)
 
 RECOVER_CHUNK = 100
+BACKFILL_WAIT_SECONDS = 0.8
+DEFAULT_SCROLL_PX = 600
+MIN_SCROLL_PX = 100
+DAY_MS = 86_400_000
 
 
 def epoch_ms() -> int:
@@ -57,6 +66,7 @@ class ZaloWeb(Colleague):
         since_ms: int | None = None,
         clock: Callable[[], int] = epoch_ms,
         sleep: Callable[[float], None] = time.sleep,
+        snapshot_dir: Path | None = None,
     ) -> None:
         super().__init__(mediator)
         self.driver = driver
@@ -66,6 +76,8 @@ class ZaloWeb(Colleague):
         self.since_ms = since_ms
         self.clock = clock
         self.sleep = sleep
+        self.snapshot_dir = snapshot_dir if snapshot_dir is not None else settings.db_path.parent / "snapshots"
+        self.was_scrolled_up = False
         self.page_state: str | None = None  # last announced state: LOGIN / NO_CHAT / READING
         self.conversation: ConversationRow | None = None
         self._empty_since: int | None = None
@@ -95,7 +107,24 @@ class ZaloWeb(Colleague):
             return
         self.repo.upsert_senders(state.senders, self.clock())
         if self.conversation is None or state.conversation.key != self.conversation.key:
+            # First READING poll of this run, after a restart, or a switch: backfill [R2.4, R2.5].
             self._enter_conversation(state.conversation)
+            self.backfill(state)
+            return
+        if not state.at_bottom:
+            # The human is reading history: keep ingesting what renders, remember to check for a gap [R2.12].
+            if not self.was_scrolled_up:
+                log.warning("live_reading_paused", extra={"conversation_key": self.conversation.key})
+            self.was_scrolled_up = True
+            self.ingest(state.messages)
+            return
+        if self.was_scrolled_up:
+            self.was_scrolled_up = False
+            oldest = state.oldest()
+            if oldest is not None and not self.repo.exists(self.conversation.key, oldest.message_key):
+                log.info("catch_up", extra={"conversation_key": self.conversation.key})
+                self.backfill(state)
+                return
         self.ingest(state.messages)
 
     def mark_checked(self, conversation_key: str, message_keys: Iterable[str]) -> int:
@@ -111,6 +140,87 @@ class ZaloWeb(Colleague):
             for start in range(0, len(messages), RECOVER_CHUNK):
                 self.mediator.notify(NewMessages(messages=messages[start : start + RECOVER_CHUNK]))
             log.info("messages_recovered", extra={"conversation_key": key, "count": len(messages)})
+
+    def purge(self, now_ms: int | None = None) -> dict[str, int]:
+        """Retention purge of ZaloWeb's own data: message tombstones, unused sender names, old snapshots [R6.3]."""
+        now = self.clock() if now_ms is None else now_ms
+        cutoff = now - self.settings.retention_days * DAY_MS
+        messages, senders = self.repo.purge(cutoff, now)
+        snapshots = 0
+        if self.snapshot_dir.is_dir():
+            for path in self.snapshot_dir.iterdir():
+                if path.is_file() and path.stat().st_mtime * 1000 < cutoff:
+                    path.unlink(missing_ok=True)
+                    snapshots += 1
+        result = {"messages": messages, "senders": senders, "snapshots": snapshots}
+        log.info("zalo_purge", extra=result)
+        return result
+
+    # --- backfill [R2.4, R2.11, R2.12] ------------------------------------------------------------------------
+
+    def backfill(self, state: PageState) -> int:
+        """Ingest the current screen, then scroll up screen by screen until a stop condition holds (design §4.4):
+
+        1. the oldest rendered bubble was already stored *before* this screen was ingested;
+        2. the oldest rendered bubble is older than the start watermark;
+        3. `BACKFILL_MAX_MESSAGES` messages were stored by this backfill;
+        4. `scrollTop` stayed at 0 for two reads (start of the chat).
+
+        Then scroll back to the bottom. Returns the number of messages stored.
+        """
+        conv = self.conversation
+        if conv is None:
+            return 0
+        gathered = 0
+        top_reads = 0
+        scrolled = False
+        reason = "screen_limit"
+        try:
+            for _ in range(self.settings.backfill_max_messages + 2):
+                oldest = state.oldest()
+                oldest_was_stored = oldest is not None and self.repo.exists(conv.key, oldest.message_key)
+                gathered += self.ingest(state.messages)
+                top_reads = top_reads + 1 if state.scroll_top <= 0 else 0
+                if oldest is None:
+                    reason = "empty"
+                elif oldest_was_stored:
+                    reason = "oldest_stored"
+                elif oldest.sent_at_ms < conv.start_ms:
+                    reason = "watermark"
+                elif gathered >= self.settings.backfill_max_messages:
+                    reason = "max_messages"
+                elif top_reads >= 2:
+                    reason = "start_of_chat"
+                else:
+                    reason = ""
+                if reason:
+                    break
+                self.driver.scroll_messages(-self._viewport(state))
+                scrolled = True
+                self.sleep(BACKFILL_WAIT_SECONDS)
+                next_state = self._read()
+                if next_state is None:
+                    return gathered  # browser died or drift; the next READING poll starts over
+                if next_state.state != "READING" or next_state.conversation is None or next_state.drift:
+                    reason = "page_changed"
+                    break
+                if next_state.conversation.key != conv.key:
+                    reason = "conversation_switched"
+                    break
+                self.repo.upsert_senders(next_state.senders, self.clock())
+                state = next_state
+            if scrolled:
+                self.driver.scroll_to_bottom()
+        except BrowserError as exc:
+            self._browser_failed(exc)
+            return gathered
+        log.info("backfill_done", extra={"conversation_key": conv.key, "count": gathered, "reason": reason})
+        return gathered
+
+    @staticmethod
+    def _viewport(state: PageState) -> int:
+        """Scroll by ~90 % of the visible height so consecutive screens overlap."""
+        return max(int(state.client_height * 0.9), MIN_SCROLL_PX) if state.client_height else DEFAULT_SCROLL_PX
 
     # --- ingest [R2.2, R2.3, R2.7, R2.10, R2.11] ---------------------------------------------------------------
 

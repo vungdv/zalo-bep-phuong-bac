@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -9,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from fake_driver import LOGIN, NO_CHAT, FakeDriver, bubble, reading
+from fake_driver import LOGIN, NO_CHAT, FakeChat, FakeDriver, bubble, reading
 from fakes import FakeMediator
 from order_extractor.config import Settings
 from order_extractor.db.connection import open_database
@@ -24,7 +25,7 @@ from order_extractor.events import (
 )
 from order_extractor.zalo.browser import BrowserError, BrowserTimeout
 from order_extractor.zalo.messages_repo import MessagesRepo
-from order_extractor.zalo.zalo_web import ZaloWeb
+from order_extractor.zalo.zalo_web import ZaloWeb, epoch_ms
 
 NOW = 10_000_000
 
@@ -122,7 +123,7 @@ def test_login_and_no_chat_emit_once_and_store_nothing(repo: MessagesRepo, page:
 
 
 def test_state_transitions_are_announced_each_time(repo: MessagesRepo) -> None:
-    h = Harness(repo)
+    h = Harness(repo, since_ms=None)  # bubbles predate the watermark: backfill stops on the first screen
     h.driver.queue = [LOGIN, NO_CHAT, reading([bubble(1000)]), NO_CHAT, reading([bubble(1000)]), LOGIN]
     for _ in range(6):
         h.zalo.poll()
@@ -130,7 +131,6 @@ def test_state_transitions_are_announced_each_time(repo: MessagesRepo) -> None:
         "LoginRequired",
         "NoChatOpen",
         "ZaloReady",
-        "NewMessages",
         "NoChatOpen",
         "ZaloReady",
         "LoginRequired",
@@ -273,11 +273,11 @@ def test_consecutive_failures_exhaust_and_success_resets(repo: MessagesRepo) -> 
 
 
 def test_after_browser_death_the_conversation_is_announced_again(repo: MessagesRepo) -> None:
-    h = Harness(repo)
+    h = Harness(repo, since_ms=None)
     h.driver.queue = [reading([bubble(1000)]), BrowserError("x"), reading([bubble(1000)])]
     for _ in range(3):
         h.zalo.poll()
-    assert h.mediator.types == ["ZaloReady", "NewMessages", "BrowserDied", "ZaloReady"]
+    assert h.mediator.types == ["ZaloReady", "BrowserDied", "ZaloReady"]
 
 
 # --- selector drift [R2.9] ------------------------------------------------------------------------------------
@@ -333,7 +333,7 @@ def test_bubbles_that_never_parse_report_drift_after_alert_window(repo: Messages
 
 
 def test_parsing_again_resets_the_empty_timer(repo: MessagesRepo) -> None:
-    h = Harness(repo)
+    h = Harness(repo, since_ms=None)
     h.driver.queue = [{"state": "NO_CHAT", "rendered_bubbles": 3}, reading([bubble(1000)])]
     h.zalo.poll()
     h.clock.now += 50_000
@@ -342,3 +342,254 @@ def test_parsing_again_resets_the_empty_timer(repo: MessagesRepo) -> None:
     h.driver.page = {"state": "NO_CHAT", "rendered_bubbles": 3}
     h.zalo.poll()
     assert "SelectorDrift" not in h.mediator.types
+
+
+# --- T10: backfill, conversation switch, catch-up, purge ------------------------------------------------------
+
+
+def chat_of(n: int, *, key: str = "g1", start: int = 1000, step: int = 1000, window: int = 5) -> FakeChat:
+    return FakeChat([bubble(start + i * step) for i in range(n)], key=key, window=window)
+
+
+def keys_of(chat: FakeChat, *idx: int) -> list[str]:
+    return [chat.messages[i]["message_key"] for i in idx]
+
+
+def by_time(keys: list[str]) -> list[str]:
+    return sorted(keys, key=lambda k: int(k.split("_")[0]))
+
+
+def test_first_open_backfills_the_whole_chat_and_returns_to_bottom(repo: MessagesRepo) -> None:
+    chat = chat_of(12)
+    h = Harness(repo, chat)
+    h.zalo.poll()
+    assert len(h.stored()) == 12  # "oldest rendered stored" did not fire on the first screen
+    assert h.driver.scrolled_up >= 2
+    assert h.driver.scrolls[-1] == "bottom" and chat.at_bottom
+    assert h.sleeps == [0.8] * h.driver.scrolled_up
+    # one NewMessages per screen, each oldest-first; every message emitted exactly once
+    emitted = [k for batch in h.new_messages() for k in batch]
+    assert by_time(emitted) == keys_of(chat, *range(12))
+    assert all(batch == by_time(batch) for batch in h.new_messages())
+
+
+def test_backfill_stops_when_the_oldest_rendered_bubble_was_already_stored(repo: MessagesRepo) -> None:
+    chat = chat_of(12)
+    repo.ensure_conversation("g1", start_ms=0, now_ms=0)
+    for m in chat.messages[:5]:  # stored by an earlier run
+        repo.insert_message(Message(conversation_key="g1", **m), extracted=True, observed_at_ms=0)
+    h = Harness(repo, chat)  # a restart: the first READING poll backfills
+    h.zalo.poll()
+    assert len(h.stored()) == 12
+    assert h.driver.scrolled_up == 1
+    assert by_time([k for b in h.new_messages() for k in b]) == keys_of(chat, *range(5, 12))
+
+
+def test_restart_with_nothing_missed_does_not_scroll(repo: MessagesRepo) -> None:
+    chat = chat_of(8)
+    repo.ensure_conversation("g1", start_ms=0, now_ms=0)
+    for m in chat.messages:
+        repo.insert_message(Message(conversation_key="g1", **m), extracted=True, observed_at_ms=0)
+    h = Harness(repo, chat)
+    h.zalo.poll()
+    assert h.driver.scrolls == []
+    assert h.mediator.types == ["ZaloReady"]
+
+
+def test_backfill_stops_at_the_start_watermark(repo: MessagesRepo) -> None:
+    chat = chat_of(12)  # ts 1000..12000
+    h = Harness(repo, chat, since_ms=7000)
+    h.zalo.poll()
+    assert h.driver.scrolled_up == 1
+    rows = h.stored()
+    assert sorted(rows) == sorted(keys_of(chat, *range(3, 12)))
+    assert [rows[k]["extracted"] for k in keys_of(chat, 3, 4, 5, 6)] == [1, 1, 1, 0]  # ingest applies the watermark
+    assert by_time([k for b in h.new_messages() for k in b]) == keys_of(chat, *range(6, 12))
+
+
+def test_backfill_stops_at_backfill_max_messages(repo: MessagesRepo) -> None:
+    h = Harness(repo, chat_of(30), backfill_max_messages=6)
+    h.zalo.poll()
+    assert h.driver.scrolled_up == 1
+    assert len(h.stored()) == 9  # 5 on the first screen + 4 on the second
+
+
+def test_backfill_stops_when_scroll_top_stays_at_zero_for_two_reads(repo: MessagesRepo) -> None:
+    h = Harness(repo)
+    h.driver.queue = [
+        reading([bubble(5000), bubble(6000)], scroll_top=0),
+        reading([bubble(3000), bubble(4000)], scroll_top=0),  # list grew at the top but scrollTop stayed 0
+    ]
+    h.driver.page = reading([bubble(1000), bubble(2000)], scroll_top=0)
+    h.zalo.poll()
+    assert h.driver.scrolled_up == 1
+    assert len(h.stored()) == 4
+
+
+def test_first_open_without_since_scrolls_at_most_one_screen(repo: MessagesRepo) -> None:
+    chat = chat_of(50, start=NOW - 100_000)
+    h = Harness(repo, chat, since_ms=None)
+    h.zalo.poll()
+    assert h.driver.scrolled_up <= 1
+    assert h.mediator.types == ["ZaloReady"]
+    assert all(r["extracted"] == 1 for r in h.stored().values())
+
+
+def test_conversation_switch_gets_its_own_watermark_and_backfill(repo: MessagesRepo) -> None:
+    h = Harness(repo, chat_of(3, start=NOW - 5000), since_ms=None)
+    h.zalo.poll()
+    h.clock.now = NOW + 60_000
+    other = chat_of(8, key="g2", start=NOW + 1000)  # messages after g1's watermark, before g2's
+    h.driver.page = other
+    h.zalo.poll()
+    assert repo.get_conversation("g1").start_ms == NOW  # type: ignore[union-attr]
+    assert repo.get_conversation("g2").start_ms == NOW + 60_000  # type: ignore[union-attr]
+    assert [e.conversation.key for e in h.mediator.of_type(ZaloReady)] == ["g1", "g2"]
+    assert h.mediator.of_type(NewMessages) == []  # all of g2 predates its own watermark
+    assert len(h.stored("g2")) == 5  # first screen only: the watermark stops the backfill
+
+
+def test_since_applies_to_every_conversation_first_seen_in_the_run(repo: MessagesRepo) -> None:
+    h = Harness(repo, chat_of(2), since_ms=500)
+    h.zalo.poll()
+    h.driver.page = chat_of(2, key="g2")
+    h.zalo.poll()
+    assert [repo.get_conversation(k).start_ms for k in ("g1", "g2")] == [500, 500]  # type: ignore[union-attr]
+
+
+def test_catch_up_runs_when_there_is_a_gap(repo: MessagesRepo) -> None:
+    chat = chat_of(10)
+    h = Harness(repo, chat)
+    h.zalo.poll()
+    chat.scroll(-300)  # the human scrolls up
+    h.zalo.poll()
+    assert h.zalo.was_scrolled_up
+    chat.append(*[bubble(100_000 + i) for i in range(8)])  # arrive while scrolled up
+    chat.to_bottom()  # the human returns to the bottom
+    h.driver.scrolls.clear()
+    h.zalo.poll()
+    assert len(h.stored()) == 18
+    assert h.driver.scrolled_up >= 1
+    assert not h.zalo.was_scrolled_up
+
+
+def test_no_catch_up_without_a_gap(repo: MessagesRepo) -> None:
+    chat = chat_of(10)
+    h = Harness(repo, chat)
+    h.zalo.poll()
+    chat.scroll(-300)
+    h.zalo.poll()
+    chat.append(bubble(100_000), bubble(100_001))
+    chat.to_bottom()
+    h.driver.scrolls.clear()
+    h.zalo.poll()
+    assert h.driver.scrolls == []
+    assert h.zalo.was_scrolled_up is False
+    assert len(h.stored()) == 12
+    assert h.new_messages()[-1] == ["100000_1001", "100001_1001"]
+
+
+def test_while_scrolled_up_rendered_history_is_still_ingested(repo: MessagesRepo) -> None:
+    h = Harness(repo, reading([bubble(1000)]))
+    h.zalo.poll()  # enter the conversation
+    h.driver.scrolls.clear()
+    h.driver.page = reading([bubble(500), bubble(600)], at_bottom=False)
+    h.zalo.poll()
+    h.zalo.poll()
+    assert {"500_1001", "600_1001"} <= set(h.stored())
+    assert h.new_messages()[-1] == ["500_1001", "600_1001"]
+    assert h.driver.scrolls == []  # never scrolls while the human is reading history
+
+
+def test_backfill_stops_when_the_page_changes(repo: MessagesRepo) -> None:
+    h = Harness(repo, reading([bubble(5000)]))
+    h.driver.queue = [reading([bubble(5000)]), LOGIN]
+    h.zalo.poll()
+    assert h.driver.scrolls == [-450, "bottom"]
+    h.driver.page = LOGIN
+    h.zalo.poll()
+    assert h.mediator.types[-1] == "LoginRequired"
+
+
+def test_backfill_stops_when_the_conversation_switches(repo: MessagesRepo) -> None:
+    h = Harness(repo)
+    h.driver.queue = [reading([bubble(5000)]), reading([bubble(9000)], key="g2")]
+    h.driver.page = reading([bubble(9000)], key="g2")
+    h.zalo.poll()
+    assert "g2" not in {r["conversation_key"] for r in h.stored().values()}
+    h.zalo.poll()
+    assert [e.conversation.key for e in h.mediator.of_type(ZaloReady)] == ["g1", "g2"]
+
+
+def test_browser_failure_during_backfill_emits_browser_died(repo: MessagesRepo) -> None:
+    h = Harness(repo, chat_of(12))
+
+    def boom(dy: int) -> Any:
+        raise BrowserError("scroll failed")
+
+    h.driver.scroll_messages = boom  # type: ignore[method-assign]
+    h.zalo.poll()
+    assert h.mediator.types == ["ZaloReady", "NewMessages", "BrowserDied"]
+    assert h.zalo.conversation is None  # the next READING poll backfills again
+
+
+def test_read_failure_during_backfill_stops_without_scrolling_back(repo: MessagesRepo) -> None:
+    h = Harness(repo)
+    h.driver.queue = [reading([bubble(5000)]), BrowserError("gone")]
+    h.driver.page = reading([bubble(5000)])
+    h.zalo.poll()
+    assert h.driver.scrolls == [-450]
+    assert h.mediator.types[-1] == "BrowserDied"
+
+
+def test_scroll_step_defaults_when_client_height_unknown(repo: MessagesRepo) -> None:
+    page = reading([bubble(5000)])
+    page["client_height"] = 0
+    h = Harness(repo)
+    h.driver.queue = [page, page]
+    h.driver.page = page
+    h.zalo.poll()
+    assert h.driver.scrolls[0] == -600
+
+
+def test_purge_tombstones_messages_drops_senders_and_old_snapshots(repo: MessagesRepo, tmp_path: Path) -> None:
+    day = 86_400_000
+    h = Harness(repo, retention_days=30, db_path=tmp_path / "app.db")
+    h.zalo = h.make()
+    repo.ensure_conversation("g1", start_ms=0, now_ms=0)
+    repo.upsert_senders({"7": "Lan"}, 0)
+    old = Message(conversation_key="g1", message_key="1_7", sent_at_ms=day, sender_uid="7", text="x")
+    repo.insert_message(old, extracted=True, observed_at_ms=0)
+    snaps = tmp_path / "snapshots"
+    snaps.mkdir()
+    stale, fresh = snaps / "old.yml", snaps / "new.yml"
+    stale.write_text("x")
+    fresh.write_text("y")
+    os.utime(stale, (0, 0))
+    now = 40 * day
+    os.utime(fresh, (now / 1000, now / 1000))
+    result = h.zalo.purge(now)
+    assert result == {"messages": 1, "senders": 1, "snapshots": 1}
+    assert not stale.exists() and fresh.exists()
+    assert repo.sender_name("7") is None
+
+
+def test_purge_without_snapshot_dir_uses_the_clock(repo: MessagesRepo, tmp_path: Path) -> None:
+    h = Harness(repo, db_path=tmp_path / "app.db")
+    h.zalo = h.make()
+    assert h.zalo.purge() == {"messages": 0, "senders": 0, "snapshots": 0}
+
+
+def test_reading_with_zero_parsed_messages_reports_drift_after_alert_window(repo: MessagesRepo) -> None:
+    h = Harness(repo, reading([]))
+    h.zalo.poll()
+    h.clock.now += 60_000
+    h.zalo.poll()
+    assert h.mediator.types == ["ZaloReady", "SelectorDrift"]
+    assert h.driver.scrolls == []  # nothing rendered → nothing to backfill
+
+
+def test_default_clock_is_epoch_ms(repo: MessagesRepo) -> None:
+    zalo = ZaloWeb(FakeMediator(), FakeDriver(), repo, Settings(), reader_script="() => 1")
+    assert zalo.clock is epoch_ms
+    assert epoch_ms() > 1_700_000_000_000
