@@ -6,8 +6,6 @@ import logging
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from acceptance.harness import (
     DAY_MS,
     REPO_ROOT,
@@ -110,11 +108,6 @@ async def test_r2_2_live_messages_are_processed_oldest_first(db: Path):
     assert [r["message_key"] for r in stored][-2:] == [older["message_key"], newer["message_key"]]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG (design-accepted deviation, design §4.4): backfill emits each screen as it scrolls up, so the "
-    "rule sees newer screens before older ones and order ids are not chronological (R2.2)",
-)
 async def test_r2_2_backfilled_history_is_processed_oldest_first(db: Path):
     """R2.2: messages gathered by a multi-screen backfill reach the rule in chronological order."""
     rule = FirstIntegerRule()
@@ -438,11 +431,6 @@ async def test_r2_10_new_messages_event_excludes_pre_watermark_messages(db: Path
     assert len(all_messages(db)) == 3
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG (design-accepted deviation, design §4.4): a multi-screen backfill inside one poll emits one "
-    "NewMessages per screen instead of one per poll (R2.10)",
-)
 async def test_r2_10_one_new_messages_event_per_poll_even_during_backfill(db: Path):
     """R2.10: the poll that first opens a chat (and backfills several screens) emits exactly one NewMessages."""
     app = App(db, sheet=sheet(), page=FakeChat(history(12, T0), window=5))

@@ -25,6 +25,7 @@ from order_extractor.events import (
 )
 from order_extractor.zalo.browser import BrowserError, BrowserTimeout, EvalError
 from order_extractor.zalo.messages_repo import MessagesRepo
+from order_extractor.zalo.reader import PageState
 from order_extractor.zalo.zalo_web import ZaloWeb, epoch_ms
 
 NOW = 10_000_000
@@ -367,10 +368,8 @@ def test_first_open_backfills_the_whole_chat_and_returns_to_bottom(repo: Message
     assert h.driver.scrolled_up >= 2
     assert h.driver.scrolls[-1] == "bottom" and chat.at_bottom
     assert h.sleeps == [0.8] * h.driver.scrolled_up
-    # one NewMessages per screen, each oldest-first; every message emitted exactly once
-    emitted = [k for batch in h.new_messages() for k in batch]
-    assert by_time(emitted) == keys_of(chat, *range(12))
-    assert all(batch == by_time(batch) for batch in h.new_messages())
+    # one NewMessages for the whole backfill, oldest first, every message exactly once [R2.2, R2.10]
+    assert h.new_messages() == [keys_of(chat, *range(12))]
 
 
 def test_backfill_stops_when_the_oldest_rendered_bubble_was_already_stored(repo: MessagesRepo) -> None:
@@ -382,7 +381,7 @@ def test_backfill_stops_when_the_oldest_rendered_bubble_was_already_stored(repo:
     h.zalo.poll()
     assert len(h.stored()) == 12
     assert h.driver.scrolled_up == 1
-    assert by_time([k for b in h.new_messages() for k in b]) == keys_of(chat, *range(5, 12))
+    assert h.new_messages() == [keys_of(chat, *range(5, 12))]
 
 
 def test_restart_with_nothing_missed_does_not_scroll(repo: MessagesRepo) -> None:
@@ -404,7 +403,7 @@ def test_backfill_stops_at_the_start_watermark(repo: MessagesRepo) -> None:
     rows = h.stored()
     assert sorted(rows) == sorted(keys_of(chat, *range(3, 12)))
     assert [rows[k]["extracted"] for k in keys_of(chat, 3, 4, 5, 6)] == [1, 1, 1, 0]  # ingest applies the watermark
-    assert by_time([k for b in h.new_messages() for k in b]) == keys_of(chat, *range(6, 12))
+    assert h.new_messages() == [keys_of(chat, *range(6, 12))]
 
 
 def test_backfill_stops_at_backfill_max_messages(repo: MessagesRepo) -> None:
@@ -539,7 +538,7 @@ def test_read_failure_during_backfill_still_scrolls_back(repo: MessagesRepo) -> 
     h.driver.page = reading([bubble(5000)])
     h.zalo.poll()
     assert h.driver.scrolls == [-450, "bottom"]
-    assert h.mediator.types[-1] == "BrowserDied"
+    assert h.mediator.types == ["ZaloReady", "BrowserDied", "NewMessages"]  # what was gathered is still stored
     assert not h.zalo._tool_scrolled
 
 
@@ -548,7 +547,8 @@ def test_mid_backfill_read_failure_on_a_chat_returns_to_the_bottom(repo: Message
     h = Harness(repo, chat)
     h.driver.fail_read(BrowserTimeout("eval timed out"), at=2)  # the read after the first scroll up
     h.zalo.poll()
-    assert h.mediator.types[-1] == "BrowserDied"
+    assert "BrowserDied" in h.mediator.types
+    assert h.new_messages() == [keys_of(chat, *range(7, 12))]  # the first screen is stored
     assert h.driver.scrolls == [-450, "bottom"] and chat.at_bottom
 
 
@@ -631,6 +631,28 @@ def test_scroll_timeout_during_backfill_stays_on_the_relaunch_path(repo: Message
     assert h.mediator.types[-1] == "BrowserDied"
     assert "SelectorDrift" not in h.mediator.types
     assert h.driver.consecutive_failures == 1
+
+
+def test_backfill_ingests_once_and_names_newer_bubbles_from_an_older_screen(repo: MessagesRepo) -> None:
+    older = [bubble(1000 + i * 1000, "1001", f"m{i}") for i in range(10)]
+    older[2]["sender"] = "Lan"  # only an old bubble renders the name header
+    chat = FakeChat(older, window=5)
+    h = Harness(repo, chat)
+    h.zalo.poll()
+    assert len(h.mediator.of_type(NewMessages)) == 1
+    rows = h.stored()
+    assert rows["10000_1001"]["sender"] == "Lan"  # newest screen had no header: name from the older screen
+    assert h.zalo.backfill(PageState.parse(reading([]))) == 0  # an empty screen gathers nothing
+
+
+def test_backfill_stops_when_a_screen_does_not_move(repo: MessagesRepo) -> None:
+    h = Harness(repo)
+    same = reading([bubble(3000), bubble(4000)], scroll_top=500)
+    h.driver.queue = [same, same]  # the scroll did not move the list: oldest was gathered from the screen before
+    h.driver.page = same
+    h.zalo.poll()
+    assert h.driver.scrolled_up == 1
+    assert h.new_messages() == [["3000_1001", "4000_1001"]]
 
 
 def test_scroll_step_defaults_when_client_height_unknown(repo: MessagesRepo) -> None:

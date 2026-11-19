@@ -10,7 +10,10 @@ Public API (called by the Orchestrator):
 * `purge(now_ms)` — retention purge of messages, senders and DOM snapshots [R6.3].
 
 Backfill runs on the first READING poll of a conversation in this run (also after a restart or a switch) and as
-catch-up when the list returns to the bottom with a gap [R2.4, R2.5, R2.12]. Every screen goes through `ingest`.
+catch-up when the list returns to the bottom with a gap [R2.4, R2.5, R2.12]. It gathers the messages and sender
+names of every screen in memory, then stores senders first and calls `ingest` once with everything, so a poll emits
+at most one `NewMessages`, oldest first, even while backfilling [R2.2, R2.10]; a bubble without a name header can
+take its sender name from an older screen [R2.7].
 
 Scroll-back guarantee [R2.4, NFR1]: once backfill scrolls the list up, `_tool_scrolled` stays set until a
 `scroll_to_bottom()` succeeds. Backfill scrolls back on every exit path (try/finally), and if that fails the next
@@ -172,71 +175,92 @@ class ZaloWeb(Colleague):
     # --- backfill [R2.4, R2.11, R2.12] ------------------------------------------------------------------------
 
     def backfill(self, state: PageState) -> int:
-        """Ingest the current screen, then scroll up screen by screen until a stop condition holds (design §4.4):
+        """Gather the current screen, then scroll up screen by screen until a stop condition holds (design §4.4):
 
-        1. the oldest rendered bubble was already stored *before* this screen was ingested;
+        1. the oldest rendered bubble is already stored, or was gathered from a newer screen of this backfill;
         2. the oldest rendered bubble is older than the start watermark;
-        3. `BACKFILL_MAX_MESSAGES` messages were stored by this backfill;
+        3. `BACKFILL_MAX_MESSAGES` new (not yet stored) messages were gathered;
         4. `scrollTop` stayed at 0 for two reads (start of the chat).
 
-        Then scroll back to the bottom. Returns the number of messages stored.
+        Then store the gathered senders, `ingest` every gathered message once (one `NewMessages`, oldest first),
+        and scroll back to the bottom (on every exit path). Returns the number of messages stored.
         """
         conv = self.conversation
         if conv is None:
             return 0
-        gathered = 0
-        top_reads = 0
-        reason = "screen_limit"
+        gathered: dict[str, ReaderMessage] = {}
+        senders: dict[str, str] = {}
+        stored = 0
         reported = False  # a failure was already reported: a failing scroll-back must not report it twice
         try:
-            for _ in range(self.settings.backfill_max_messages + 2):
-                oldest = state.oldest()
-                oldest_was_stored = oldest is not None and self.repo.exists(conv.key, oldest.message_key)
-                gathered += self.ingest(state.messages)
-                top_reads = top_reads + 1 if state.scroll_top <= 0 else 0
-                if oldest is None:
-                    reason = "empty"
-                elif oldest_was_stored:
-                    reason = "oldest_stored"
-                elif oldest.sent_at_ms < conv.start_ms:
-                    reason = "watermark"
-                elif gathered >= self.settings.backfill_max_messages:
-                    reason = "max_messages"
-                elif top_reads >= 2:
-                    reason = "start_of_chat"
-                else:
-                    reason = ""
-                if reason:
-                    break
-                self._tool_scrolled = True  # before the call: a timed-out scroll may still have moved the list
-                try:
-                    self.driver.scroll_messages(-self._viewport(state))
-                except EvalError:
-                    self._drift(SCROLLER_MISSING)  # selector drift, not a dead browser: no relaunch [R2.9]
-                    reason = "scroll_container_missing"
-                    break
-                self.sleep(BACKFILL_WAIT_SECONDS)
-                next_state = self._read()
-                if next_state is None:
-                    reported = True  # browser died or drift; the next READING poll starts over
-                    return gathered
-                if next_state.state != "READING" or next_state.conversation is None or next_state.drift:
-                    reason = "page_changed"
-                    break
-                if next_state.conversation.key != conv.key:
-                    reason = "conversation_switched"
-                    break
-                self.repo.upsert_senders(next_state.senders, self.clock())
-                state = next_state
-        except BrowserError as exc:
-            reported = True
-            self._browser_failed(exc)
-            return gathered
+            failure: BrowserError | None = None
+            try:
+                reason = self._gather(conv, state, gathered, senders)
+            except BrowserError as exc:
+                failure, reason = exc, "browser_error"
+            reported = reason == "read_failed"  # `_read` already reported it
+            self.repo.upsert_senders(senders, self.clock())
+            stored = self._ingest(conv, gathered.values())
+            if failure is not None:
+                reported = True
+                self._browser_failed(failure)
         finally:
             if self._tool_scrolled:
                 self._scroll_back(report=not reported)
-        log.info("backfill_done", extra={"conversation_key": conv.key, "count": gathered, "reason": reason})
-        return gathered
+        log.info("backfill_done", extra={"conversation_key": conv.key, "count": stored, "reason": reason})
+        return stored
+
+    def _gather(
+        self,
+        conv: ConversationRow,
+        state: PageState,
+        gathered: dict[str, ReaderMessage],
+        senders: dict[str, str],
+    ) -> str:
+        """Collect messages (by key) and sender names (newest screen wins) screen by screen; returns why it stopped.
+
+        Nothing is stored here, so the stop conditions see the database as it was before the backfill."""
+        new = 0
+        top_reads = 0
+        for _ in range(self.settings.backfill_max_messages + 2):
+            oldest = state.oldest()
+            oldest_known = oldest is not None and (
+                oldest.message_key in gathered or self.repo.exists(conv.key, oldest.message_key)
+            )
+            for uid, name in state.senders.items():
+                senders.setdefault(uid, name)  # screens go newest → oldest: keep the newest name
+            for message in state.messages:
+                if message.message_key not in gathered:
+                    gathered[message.message_key] = message
+                    if not self.repo.exists(conv.key, message.message_key):
+                        new += 1
+            top_reads = top_reads + 1 if state.scroll_top <= 0 else 0
+            if oldest is None:
+                return "empty"
+            if oldest_known:
+                return "oldest_stored"
+            if oldest.sent_at_ms < conv.start_ms:
+                return "watermark"
+            if new >= self.settings.backfill_max_messages:
+                return "max_messages"
+            if top_reads >= 2:
+                return "start_of_chat"
+            self._tool_scrolled = True  # before the call: a timed-out scroll may still have moved the list
+            try:
+                self.driver.scroll_messages(-self._viewport(state))
+            except EvalError:
+                self._drift(SCROLLER_MISSING)  # selector drift, not a dead browser: no relaunch [R2.9]
+                return "scroll_container_missing"
+            self.sleep(BACKFILL_WAIT_SECONDS)
+            next_state = self._read()
+            if next_state is None:
+                return "read_failed"  # browser died or drift (already reported); the next READING poll starts over
+            if next_state.state != "READING" or next_state.conversation is None or next_state.drift:
+                return "page_changed"
+            if next_state.conversation.key != conv.key:
+                return "conversation_switched"
+            state = next_state
+        return "screen_limit"
 
     def _scroll_back(self, *, report: bool = True) -> bool:
         """Return the list to the bottom after tool scrolling; clears `_tool_scrolled` only on success [R2.4].
@@ -269,6 +293,9 @@ class ZaloWeb(Colleague):
         conv = self.conversation
         if conv is None:
             return 0
+        return self._ingest(conv, messages)
+
+    def _ingest(self, conv: ConversationRow, messages: Iterable[ReaderMessage]) -> int:
         now = self.clock()
         batch: list[Message] = []
         inserted = 0
