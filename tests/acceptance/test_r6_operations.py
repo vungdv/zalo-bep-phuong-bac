@@ -126,11 +126,11 @@ async def test_r6_2_message_text_leaves_only_as_the_messages_column(db: Path):
     for name, kwargs in ws.calls:
         for key, value in kwargs.items():
             if name == "append_rows" and key == "values":
-                assert all(TEXT not in str(cell) for row in value for cell in row[:4] + row[5:])
+                assert all(TEXT not in str(cell) for row in value for cell in row[:3])
                 assert all("cảm ơn" not in str(cell) for row in value for cell in row)
             else:
                 assert TEXT not in str(value)
-    assert [row[4] for row in ws.data] == [TEXT]
+    assert [row[3] for row in ws.data] == [TEXT]
 
 
 # --- R6.3: retention purge -------------------------------------------------------------------------------------
@@ -175,7 +175,7 @@ async def test_r6_3_new_orders_keep_their_content_until_recorded(db: Path):
     up = FakeWorksheet(header=list(HEADER))
     second = App(db, sheet=google_sheet(up), page=NO_CHAT, clock=OffsetClock(T0 + 40 * DAY_MS))
     assert await second.run(until=lambda: len(up.data) == 1, max_ticks=100) == EXIT_OK
-    assert up.data[0][2:5] == [TITLE, "Lan", TEXT]
+    assert up.data[0][2:4] == ["Lan", TEXT]
     assert {m["text"] for m in all_messages(db)} == {None}  # the messages themselves were purged
 
 

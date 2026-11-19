@@ -32,7 +32,6 @@ class _Action:
 class InMemorySheet:
     header: list[str] = field(default_factory=list)
     rows: list[list[object]] = field(default_factory=list)  # data rows (sheet row = index + 2)
-    validation_applied: bool = False
     calls: list[str] = field(default_factory=list)  # every call, in order, including failed ones
     writes: list[tuple[str, int, int]] = field(default_factory=list)  # (what, first sheet row, row count)
 
@@ -82,7 +81,6 @@ class InMemorySheet:
     def write_header(self) -> None:
         self._before("write_header")
         self.header = list(HEADER)
-        self.validation_applied = True
         self.writes.append(("header", 1, 1))
 
     def read_order_ids(self) -> set[str]:
@@ -92,7 +90,7 @@ class InMemorySheet:
     def append_rows(self, orders: Sequence[Order]) -> list[int | None]:
         action = self._before("append_rows")
         first = len(self.rows) + 2
-        self.rows.extend(order_row(o, TZ) for o in orders)
+        self.rows.extend(order_row(o) for o in orders)
         self.writes.append(("append", first, len(orders)))
         if action == "land_timeout":
             raise SheetsError("append_rows failed (timeout): read timed out", timeout=True)

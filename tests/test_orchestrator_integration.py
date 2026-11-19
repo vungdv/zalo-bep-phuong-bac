@@ -82,11 +82,10 @@ async def test_customer_message_becomes_a_sheet_row_end_to_end(tmp_path: Path):
 
     assert await run.run_until(lambda: bool(sheet.rows)) == EXIT_OK
 
-    assert sheet.header == list(HEADER) and sheet.validation_applied
+    assert sheet.header == list(HEADER)
     assert len(sheet.rows) == 1
-    order_id, time, conversation, sender, text, number, served = sheet.rows[0]
-    assert (conversation, sender, text, number, served) == ("Nhóm khách sỉ", "Lan", "cho em 2 áo", 2, False)
-    assert time == "2026-11-19 10:38"
+    order_id, number, customer, text = sheet.rows[0]
+    assert (number, customer, text) == (2, "Lan", "cho em 2 áo")
     repo = orders(tmp_path / "app.db")
     assert repo.counts() == {"NEW": 0, "RECORDED": 1, "FAILED": 0}
     assert repo.get(int(order_id)).sheet_row == 2
@@ -108,7 +107,7 @@ async def test_order_stored_before_a_crash_is_recorded_after_restart(tmp_path: P
     second = Run(db, up, NO_CHAT, rule=rule)
     assert await second.run_until(lambda: bool(up.rows)) == EXIT_OK
 
-    assert [r[5] for r in up.rows] == [3]
+    assert [r[1] for r in up.rows] == [3]
     assert orders(db).counts()["RECORDED"] == 1
     assert rule.seen == []  # the message was already checked; only the recorder had work left
 
@@ -127,7 +126,7 @@ async def test_message_stored_but_not_checked_before_a_crash_becomes_an_order_af
     assert await run.run_until(lambda: bool(sheet.rows)) == EXIT_OK
 
     assert rule.seen == [f"{T_MSG}_1001"]
-    assert [(r[3], r[5]) for r in sheet.rows] == [("Lan", 4)]
+    assert [(r[2], r[1]) for r in sheet.rows] == [("Lan", 4)]
     assert MessagesRepo(open_database(db)).unchecked_messages() == []
 
 
@@ -146,5 +145,5 @@ async def test_poisoned_unchecked_message_does_not_crash_the_restart(tmp_path: P
     run = Run(db, sheet, NO_CHAT, rule=PoisonedRule())
     assert await run.run_until(lambda: bool(sheet.rows)) == EXIT_OK
 
-    assert [r[5] for r in sheet.rows] == [5]
+    assert [r[1] for r in sheet.rows] == [5]
     assert [m.message_key for m in MessagesRepo(open_database(db)).unchecked_messages()] == [f"{T_MSG}_1001"]

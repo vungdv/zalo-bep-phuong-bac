@@ -303,7 +303,7 @@ class FakeWorksheet:
 
 def google_sheet(ws: FakeWorksheet) -> GoogleSheet:
     """The real Sheets adapter over a fake worksheet."""
-    return GoogleSheet(lambda: ws, TZ)  # type: ignore[arg-type, return-value]
+    return GoogleSheet(lambda: ws)  # type: ignore[arg-type, return-value]
 
 
 # --- playwright-cli boundary ------------------------------------------------------------------------------

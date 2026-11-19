@@ -6,7 +6,7 @@ cannot cancel a running thread. Every failure — API error, auth error, network
 account file — is raised as `SheetsError`, with `timeout=True` when the request timed out.
 
 The app writes only the header row (once, when it is empty) and appended rows. It never writes an existing row,
-so the `served` column (G) stays owned by the human [R5.4].
+so anything a human adds to the right of the four columns is left alone [R5.4].
 """
 
 from __future__ import annotations
@@ -14,23 +14,19 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Callable, Sequence
-from datetime import datetime
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Protocol
-from zoneinfo import ZoneInfo
 
 import gspread
 import requests
-from gspread.utils import InsertDataOption, ValidationConditionType, ValueInputOption
+from gspread.utils import InsertDataOption, ValueInputOption
 
 from order_extractor.recorder.orders_repo import Order
 
 if TYPE_CHECKING:
     from order_extractor.config import Settings
 
-HEADER: tuple[str, ...] = ("order_id", "time", "conversation", "sender", "messages", "order", "served")
-SERVED_RANGE = "G2:G"  # checkbox validation on every data row of `served`
-TIME_FORMAT = "%Y-%m-%d %H:%M"
+HEADER: tuple[str, ...] = ("Number", "Quantity", "Customer", "Message")
 _ROW_RANGE = re.compile(r"![A-Z]+(\d+)(?::[A-Z]+(\d+))?$")
 
 
@@ -50,7 +46,7 @@ class Sheet(Protocol):
         ...
 
     def write_header(self) -> None:
-        """Write `HEADER` into row 1 and apply checkbox validation to the `served` column."""
+        """Write `HEADER` into row 1."""
         ...
 
     def read_order_ids(self) -> set[str]:
@@ -67,21 +63,9 @@ def normalize_order_id(value: object) -> str:
     return str(value).strip() if value is not None else ""
 
 
-def format_time(sent_at_ms: int, tz: ZoneInfo) -> str:
-    return datetime.fromtimestamp(sent_at_ms / 1000, tz).strftime(TIME_FORMAT)
-
-
-def order_row(order: Order, tz: ZoneInfo) -> list[str | int | bool]:
-    """The sheet row for `order` (column order = `HEADER`). `served` starts unticked and is never written again."""
-    return [
-        str(order.id),
-        format_time(order.sent_at_ms, tz),
-        order.conversation_title or "",
-        order.sender or "",
-        order.text or "",
-        order.number,
-        False,
-    ]
+def order_row(order: Order) -> list[str | int]:
+    """The sheet row for `order` (column order = `HEADER`): order id, quantity, customer (message sender), text."""
+    return [str(order.id), order.number, order.sender or "", order.text or ""]
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -117,7 +101,7 @@ def _sheets_call[**P, R](func: Callable[P, R]) -> Callable[P, R]:
 
 
 def _rows_from_response(response: Any, count: int) -> list[int | None]:
-    """Row numbers from `append_rows`' `updates.updatedRange` (e.g. `'Orders'!A5:G7` → 5, 6, 7)."""
+    """Row numbers from `append_rows`' `updates.updatedRange` (e.g. `'Orders'!A5:D7` → 5, 6, 7)."""
     updated = (response or {}).get("updates", {}).get("updatedRange", "")
     match = _ROW_RANGE.search(updated)
     if not match:
@@ -129,9 +113,8 @@ def _rows_from_response(response: Any, count: int) -> list[int | None]:
 class GoogleSheet:
     """`Sheet` over a gspread worksheet. The worksheet is opened lazily, inside the first (threaded) call."""
 
-    def __init__(self, open_worksheet: Callable[[], gspread.Worksheet], tz: ZoneInfo) -> None:
+    def __init__(self, open_worksheet: Callable[[], gspread.Worksheet]) -> None:
         self._open_worksheet = open_worksheet
-        self._tz = tz
         self._worksheet: gspread.Worksheet | None = None
         self._lock = threading.Lock()
 
@@ -146,7 +129,7 @@ class GoogleSheet:
             client.set_timeout(settings.sheets_timeout_seconds)
             return client.open_by_key(settings.sheet_id).worksheet(settings.sheet_orders_tab)
 
-        return cls(open_worksheet, settings.tz)
+        return cls(open_worksheet)
 
     def _ws(self) -> gspread.Worksheet:
         with self._lock:
@@ -163,9 +146,7 @@ class GoogleSheet:
 
     @_sheets_call
     def write_header(self) -> None:
-        ws = self._ws()
-        ws.update([list(HEADER)], "A1:G1", value_input_option=ValueInputOption.raw)
-        ws.add_validation(SERVED_RANGE, ValidationConditionType.boolean, [], strict=True)
+        self._ws().update([list(HEADER)], "A1:D1", value_input_option=ValueInputOption.raw)
 
     @_sheets_call
     def read_order_ids(self) -> set[str]:
@@ -177,7 +158,7 @@ class GoogleSheet:
         if not orders:
             return []
         response = self._ws().append_rows(
-            [order_row(o, self._tz) for o in orders],
+            [order_row(o) for o in orders],
             value_input_option=ValueInputOption.raw,  # text starting with = + - @ is never a formula [R5.2]
             insert_data_option=InsertDataOption.insert_rows,
             table_range="A1",
