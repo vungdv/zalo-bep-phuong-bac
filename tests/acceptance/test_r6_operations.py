@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from acceptance.harness import (
@@ -94,11 +93,6 @@ async def test_r6_1_r6_5_logs_are_json_with_tick_id_text_never_at_info_stdout_on
     assert len(ticks) > 1  # a new id per tick
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: `start` (and `reprocess`) log before any tick is set: migration_applied from open_database() "
-    "(cli.py:147 → db/connection.py:107) is written with tick_id null (R6.5)",
-)
 def test_r6_5_every_line_of_a_cli_start_carries_a_tick_id(cli_env: Path, monkeypatch):
     """R6.5 through `order-extractor start`: every line in LOG_DIR/app.jsonl carries a tick_id."""
     monkeypatch.setattr(cli, "build_sheet", lambda settings: google_sheet(FakeWorksheet(header=["x"])))

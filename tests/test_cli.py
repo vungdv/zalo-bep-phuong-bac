@@ -6,6 +6,7 @@ Every test runs in a temp working directory (no real `.env`, `data/` or browser)
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
 from datetime import datetime
@@ -307,3 +308,13 @@ def test_reprocess_conversation_unknown_key(db_path):
     result = runner.invoke(cli.app, ["reprocess", "--conversation", "g404", "--since", "2026-11-19"])
     assert result.exit_code == 1
     assert "conversation g404 not found" in result.stderr
+
+
+def test_reprocess_logs_carry_a_tick_id_from_the_migration_on(db_path):
+    assert not db_path.exists()  # open_database migrates a fresh file and logs it
+    result = runner.invoke(cli.app, ["reprocess", "--order", "99"])
+    assert result.exit_code == 1
+    lines = [json.loads(line) for line in (db_path.parent / "logs" / "app.jsonl").read_text().splitlines()]
+    assert lines and "migration_applied" in {line["event"] for line in lines}
+    assert all(line["tick_id"] for line in lines)
+    assert len({line["tick_id"] for line in lines}) == 1

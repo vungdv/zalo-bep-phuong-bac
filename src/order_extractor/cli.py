@@ -6,6 +6,9 @@
 * `reprocess --order ID` | `reprocess --conversation KEY --since TIME` — queue work for the next `start`; refuses
   while `start` holds the lock.
 
+Every command runs inside a tick (`telemetry.tick()`), so lines logged before the Orchestrator's own ticks (e.g.
+`migration_applied` from `open_database`) still carry a `tick_id` [R6.5].
+
 As the composition root this module may call each repository directly, but never mixes two repositories in one
 operation. Exit codes: 0 ok, 1 failure (unexpected error, nothing to reprocess), 2 usage or configuration error,
 3 browser could not be relaunched, 4 recorder blocked (sheet header mismatch), 5 lock held.
@@ -30,7 +33,7 @@ from order_extractor.orchestrator import EXIT_ERROR, Orchestrator, epoch_ms
 from order_extractor.recorder.order_recorder import OrderRecorder
 from order_extractor.recorder.orders_repo import STATUSES, OrdersRepo
 from order_extractor.recorder.sheet import GoogleSheet, Sheet
-from order_extractor.telemetry import configure_logging, get_logger
+from order_extractor.telemetry import configure_logging, get_logger, tick
 from order_extractor.timeparse import parse_since
 from order_extractor.zalo.browser import BrowserDriver, Driver
 from order_extractor.zalo.messages_repo import MessagesRepo
@@ -143,7 +146,7 @@ def start(
         raise _fail(str(exc), EXIT_CONFIG) from exc
     configure_logging(settings.log_dir, settings.retention_days)
     try:
-        with AppLock(lock_path_for(settings.db_path)):
+        with tick(), AppLock(lock_path_for(settings.db_path)):
             conn = open_database(settings.db_path)
             try:
                 orchestrator = build_orchestrator(settings, conn, selectors, since_ms)
@@ -164,13 +167,14 @@ def status() -> None:
     if not settings.db_path.exists():
         typer.echo(f"No database yet at {settings.db_path}; run `order-extractor start` first.")
         return
-    conn = open_database(settings.db_path)
-    try:
-        repo = OrdersRepo(conn)
-        counts = repo.counts()
-        oldest = repo.oldest_pending()
-    finally:
-        conn.close()
+    with tick():
+        conn = open_database(settings.db_path)
+        try:
+            repo = OrdersRepo(conn)
+            counts = repo.counts()
+            oldest = repo.oldest_pending()
+        finally:
+            conn.close()
     typer.echo("orders by status:")
     for name in STATUSES:
         typer.echo(f"  {name:<9}{counts[name]:>6}")
@@ -205,7 +209,7 @@ def reprocess(
     since_ms = _since_ms(since, settings) if since is not None else None
     configure_logging(settings.log_dir, settings.retention_days)  # an audit trail of manual changes
     try:
-        with AppLock(lock_path_for(settings.db_path)):
+        with tick(), AppLock(lock_path_for(settings.db_path)):
             conn = open_database(settings.db_path)
             try:
                 if order is not None:
