@@ -61,7 +61,8 @@ function readState(SEL) {
 
   const convKeys = new Set();
   const seen = new Set();
-  bubbles.forEach((bubble, ordinal) => {
+  const sameContent = new Map(); // "<ts>|<name>|<text>" -> qid-less bubbles with that content rendered so far
+  bubbles.forEach((bubble) => {
     const item = bubble.closest(SEL.chat_item);
     const qidNode = bubble.matches(SEL.qid_node) ? bubble : bubble.querySelector(SEL.qid_node);
     const match = qidNode ? qidRe.exec(qidNode.getAttribute("data-qid") || "") : null;
@@ -94,11 +95,19 @@ function readState(SEL) {
       key = sentAt + "_" + uid;
       convKeys.add(match.groups.conv);
     } else {
-      // No qid on this bubble: time from the bubble id, key from a hash of sender + text + ordinal [R2.3].
+      // No qid on this bubble: time from the `bb_msg_id_<ts>` bubble id, key from a hash of sender + text +
+      // ordinal [R2.3]. The ordinal is NOT the bubble's position in the DOM (that shifts when the virtualized
+      // list mounts/unmounts bubbles above it, which would store the same message twice, R4.3). It is the
+      // number of EARLIER rendered bubbles with the same timestamp and the same sender + text, which stays
+      // the same across scrolls and still tells apart identical messages sent in the same millisecond.
       const idMatch = /(\d+)$/.exec(bubble.id || "");
       sentAt = idMatch ? Number(idMatch[1]) : 0;
       uid = "unknown";
-      key = sentAt + "_h" + hash((name || "") + "|" + text + "|" + ordinal);
+      const content = (name || "") + "|" + text;
+      const contentKey = sentAt + "|" + content;
+      const ordinal = sameContent.get(contentKey) || 0;
+      sameContent.set(contentKey, ordinal + 1);
+      key = sentAt + "_h" + hash(content + "|" + ordinal);
     }
     if (seen.has(key)) return; // album parts may repeat a key; keep the first
     seen.add(key);

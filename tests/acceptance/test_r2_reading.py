@@ -404,12 +404,6 @@ async def test_r2_9_real_reader_bubbles_without_parsable_qid_alert_after_selecto
     assert snapshot.is_file() and snapshot.parent == db.parent / "snapshots"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG (gap in R2.3 itself): the no-qid fallback key hashes the bubble's ordinal among *rendered* "
-    "bubbles, so when the virtualized list drops a bubble above it the same message gets a new key and is "
-    "stored, checked and turned into an order a second time (reader.js:101; R2.3, R4.3 'at most one order')",
-)
 async def test_r2_3_bubble_without_qid_is_stored_once_when_the_rendered_window_shifts(db: Path, chromium: PageWorker):
     """R2.3: a bubble without data-qid (fallback key) is still read exactly once while the list virtualizes."""
     chromium.load("group_chat.html")

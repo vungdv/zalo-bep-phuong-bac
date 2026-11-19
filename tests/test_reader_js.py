@@ -111,6 +111,47 @@ def test_group_chat_messages(page: Any) -> None:
     assert (first["sent_at_ms"], first["sender_uid"]) == (1794544726909, "1001")
 
 
+DROP_QID = "() => document.querySelector('[data-qid^=\"5000000000003@\"]').removeAttribute('data-qid')"
+
+
+def fallback(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [m for m in state["messages"] if m["sender_uid"] == "unknown"]
+
+
+def reread(page: Any, *scripts: str) -> dict[str, Any]:
+    for js in scripts:
+        page.evaluate(js)
+    value = json.loads(page.evaluate(SCRIPT))
+    PageState.parse(value)
+    return value
+
+
+def test_bubble_without_qid_gets_a_timestamped_hash_key(page: Any) -> None:
+    page.set_content((FIXTURES / "group_chat.html").read_text(encoding="utf-8"))
+    (m,) = fallback(reread(page, DROP_QID))
+    assert m["message_key"].startswith("1794544730000_h") and m["sent_at_ms"] == 1794544730000
+    assert m["text"] == "=SUM(1,2)\ndòng 2"
+
+
+def test_fallback_key_is_stable_when_earlier_bubbles_unmount(page: Any) -> None:
+    page.set_content((FIXTURES / "group_chat.html").read_text(encoding="utf-8"))
+    before = fallback(reread(page, DROP_QID))[0]["message_key"]
+    drop_top = "() => document.querySelector('#messageViewContainer .chat-item').remove()"
+    after = fallback(reread(page, drop_top, drop_top))[0]["message_key"]  # virtualization unmounts 2 bubbles above
+    assert after == before
+
+
+def test_identical_qidless_bubbles_in_the_same_ms_get_distinct_keys(page: Any) -> None:
+    page.set_content((FIXTURES / "group_chat.html").read_text(encoding="utf-8"))
+    clone = (
+        "() => { const b = document.querySelector('#bb_msg_id_1794544730000').closest('.chat-item');"
+        " b.after(b.cloneNode(true)); }"
+    )
+    keys = [m["message_key"] for m in fallback(reread(page, DROP_QID, clone))]
+    assert len(keys) == 2 and len(set(keys)) == 2
+    assert all(k.startswith("1794544730000_h") for k in keys)
+
+
 def test_senders_map_only_from_rendered_name_headers(page: Any) -> None:
     assert read(page, "group_chat.html")["senders"] == {"1001": "Lan", "1002": "Minh", "1003": "Hoa"}
 
