@@ -19,3 +19,17 @@ class FirstIntegerRule:
         self.seen.append(message.message_key)
         match = _INTEGER.search(message.text or "")
         return int(match.group()) if match else None
+
+
+class PoisonedRule(FirstIntegerRule):
+    """`FirstIntegerRule`, except messages whose text contains `poison` raise and `bad` returns a float."""
+
+    def extract(self, message: Message) -> int | None:
+        text = message.text or ""
+        if "poison" in text:
+            self.seen.append(message.message_key)
+            raise ValueError(f"cannot parse {text!r}")  # message text in the exception: must never be logged
+        if "bad" in text:
+            self.seen.append(message.message_key)
+            return 2.5  # type: ignore[return-value]
+        return super().extract(message)

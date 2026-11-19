@@ -6,6 +6,7 @@ import ast
 import asyncio
 import re
 from pathlib import Path
+from typing import Any
 
 from acceptance.harness import (
     REPO_ROOT,
@@ -88,17 +89,19 @@ async def test_r3_3_orchestrator_opens_zalo_web_then_drives_the_polling_loop(db:
     assert calls.count("eval") == 5
 
 
-class CrashingRule(FirstIntegerRule):
-    """Simulates the process dying inside the rule on one message."""
+def crash_on_new_order(app: App, message_key: str) -> None:
+    """Simulates the process dying while the order of `message_key` is being stored (after the rule ran).
 
-    def __init__(self, crash_on: str) -> None:
-        super().__init__()
-        self.crash_on = crash_on
+    A rule that merely raises no longer kills the service (it is logged and the message left unchecked), so the
+    crash is injected at the mediator instead."""
+    route = app.orch.notify
 
-    def extract(self, message: Message) -> int | None:
-        if message.message_key == self.crash_on:
+    def crashing(event: Any) -> None:
+        if isinstance(event, NewOrder) and event.message_key == message_key:
             raise RuntimeError("simulated crash")
-        return super().extract(message)
+        route(event)
+
+    app.orch.notify = crashing  # type: ignore[method-assign]
 
 
 async def test_r3_4_messages_are_marked_checked_only_after_their_orders_exist(db: Path):
@@ -106,7 +109,8 @@ async def test_r3_4_messages_are_marked_checked_only_after_their_orders_exist(db
     already stored); on restart the rule re-runs and no order is duplicated."""
     msgs = [bubble(T0, "1001", "lấy 1", sender="Lan"), bubble(T0 + 1, "1002", "lấy 2", sender="Minh")]
     chat = FakeChat(msgs)
-    first = App(db, sheet=InMemorySheet(header=list(HEADER)), page=chat, rule=CrashingRule(msgs[1]["message_key"]))
+    first = App(db, sheet=InMemorySheet(header=list(HEADER)), page=chat)
+    crash_on_new_order(first, msgs[1]["message_key"])
     assert await first.run(max_ticks=5) == EXIT_ERROR
 
     assert [o.number for o in all_orders(db)] == [1]  # the first order was committed …

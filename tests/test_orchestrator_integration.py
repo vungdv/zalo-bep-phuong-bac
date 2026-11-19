@@ -24,7 +24,7 @@ from order_extractor.recorder.sheet import HEADER
 from order_extractor.status import StatusPrinter
 from order_extractor.zalo.messages_repo import MessagesRepo
 from order_extractor.zalo.zalo_web import ZaloWeb
-from rules_for_tests import FirstIntegerRule
+from rules_for_tests import FirstIntegerRule, PoisonedRule
 
 T_MSG = 1_795_059_480_000  # 2026-11-19 10:38 in Asia/Ho_Chi_Minh
 MAX_TICKS = 300
@@ -129,3 +129,22 @@ async def test_message_stored_but_not_checked_before_a_crash_becomes_an_order_af
     assert rule.seen == [f"{T_MSG}_1001"]
     assert [(r[3], r[5]) for r in sheet.rows] == [("Lan", 4)]
     assert MessagesRepo(open_database(db)).unchecked_messages() == []
+
+
+async def test_poisoned_unchecked_message_does_not_crash_the_restart(tmp_path: Path):
+    db = tmp_path / "app.db"
+    messages = MessagesRepo(open_database(db))
+    messages.ensure_conversation("g1", start_ms=0, now_ms=T_MSG, title="Nhóm")
+    for offset, text in ((0, "poison 7"), (1, "lấy 5 cái")):
+        stored = Message(
+            conversation_key="g1", message_key=f"{T_MSG + offset}_1001", sent_at_ms=T_MSG + offset, sender_uid="1001"
+        )
+        stored.text, stored.sender = text, "Lan"
+        assert messages.insert_message(stored, extracted=False, observed_at_ms=T_MSG)
+
+    sheet = InMemorySheet(header=list(HEADER))
+    run = Run(db, sheet, NO_CHAT, rule=PoisonedRule())
+    assert await run.run_until(lambda: bool(sheet.rows)) == EXIT_OK
+
+    assert [r[5] for r in sheet.rows] == [5]
+    assert [m.message_key for m in MessagesRepo(open_database(db)).unchecked_messages()] == [f"{T_MSG}_1001"]
