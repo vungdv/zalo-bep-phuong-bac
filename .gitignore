@@ -50,3 +50,6 @@ data/
 .vscode/
 .idea/
 .DS_Store
+
+# --- Credentials (Google service account, etc.) ---
+secrets/
