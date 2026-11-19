@@ -21,6 +21,7 @@ from order_extractor import cli
 from order_extractor.config import Settings
 from order_extractor.db.connection import open_database
 from order_extractor.events import Message, NewOrder
+from order_extractor.extractor.rules import StubRule
 from order_extractor.lock import AppLock, lock_path_for
 from order_extractor.recorder.orders_repo import OrdersRepo
 from order_extractor.recorder.sheet import HEADER
@@ -45,6 +46,7 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]
     monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", str(sa))
     monkeypatch.setenv("READ_INTERVAL_SECONDS", "0.01")
     monkeypatch.setenv("SHEETS_TIMEOUT_SECONDS", "1")
+    monkeypatch.setattr(cli, "build_rule", lambda settings: StubRule())  # no LLM call in CLI tests
     monkeypatch.setattr(cli, "SELECTORS_PATH", REPO_ROOT / "selectors.json")
     yield tmp_path
     root = logging.getLogger("order_extractor")  # configure_logging bound handlers to the runner's streams
@@ -99,7 +101,7 @@ def test_start_exits_non_zero_when_the_recorder_is_blocked(monkeypatch):
     fake_boundaries(monkeypatch, NO_CHAT, InMemorySheet(header=["order_id", "when"]))
     result = runner.invoke(cli.app, ["start"])
     assert result.exit_code == 4
-    assert "Open the chat group to monitor" in result.stdout
+    assert "Open a chat to monitor" in result.stdout
     assert "exit code 4" in result.stderr
 
 
@@ -165,8 +167,6 @@ def test_default_boundaries_are_the_real_adapters():
     driver = cli.build_driver(settings, {"scroller": "#chatView"})
     assert type(driver).__name__ == "BrowserDriver" and driver.scroller_selector == "#chatView"
     assert type(cli.build_sheet(settings)).__name__ == "GoogleSheet"  # lazy: no network until first use
-    stub = Message(conversation_key="g", message_key="1_1", sent_at_ms=1, sender_uid="1", text="cho em 2 áo")
-    assert cli.build_rule().extract(stub) is None  # StubRule until Q-rule [R4.5]
 
 
 # --- status -------------------------------------------------------------------------------------------------

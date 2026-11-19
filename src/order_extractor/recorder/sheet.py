@@ -88,6 +88,13 @@ def _is_timeout(exc: BaseException) -> bool:
     return isinstance(exc, requests.exceptions.Timeout | TimeoutError)
 
 
+# gspread's `open_by_key` turns HTTP 403 into a bare `PermissionError`, which would log an empty message.
+_FORBIDDEN_HINT = (
+    "403 forbidden by Google: share the sheet with the service account's client_email as Editor, "
+    "and check SHEET_ID and that the Sheets and Drive APIs are enabled"
+)
+
+
 def _sheets_call[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     """Translate every failure of a Sheets call into `SheetsError`."""
 
@@ -103,7 +110,8 @@ def _sheets_call[**P, R](func: Callable[P, R]) -> Callable[P, R]:
                 cause = cause.__cause__
             timeout = _is_timeout(cause)
             kind = "timeout" if timeout else type(exc).__name__
-            raise SheetsError(f"{func.__name__} failed ({kind}): {exc}", timeout=timeout) from exc
+            detail = str(exc) or (_FORBIDDEN_HINT if isinstance(exc, PermissionError) else "")
+            raise SheetsError(f"{func.__name__} failed ({kind}): {detail}", timeout=timeout) from exc
 
     return wrapper
 

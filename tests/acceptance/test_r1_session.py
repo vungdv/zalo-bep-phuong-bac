@@ -73,7 +73,7 @@ async def test_r1_2_login_screen_prints_the_prompt_and_reads_nothing(db: Path):
 
 
 async def test_r1_3_no_chat_open_prints_the_prompt_and_waits(db: Path):
-    """R1.3: logged in but no conversation open → "Open the chat group to monitor", nothing read."""
+    """R1.3: logged in but no conversation open → "Open a chat to monitor", nothing read."""
     app = App(db, sheet=InMemorySheet(header=list(HEADER)), page=NO_CHAT)
     assert await app.run(max_ticks=4) == EXIT_OK
     assert any(NO_CHAT_PROMPT in line for line in app.status_lines)
@@ -82,7 +82,7 @@ async def test_r1_3_no_chat_open_prints_the_prompt_and_waits(db: Path):
 
 async def test_r1_2_r1_3_real_reader_login_with_unread_prefix_then_empty_conversation(db: Path, chromium: PageWorker):
     """R1.2 + R1.3 with the real reader.js: `(3) Zalo - Đăng nhập Zalo` is the login screen; an open conversation
-    without rendered messages is "Open the chat group to monitor"; neither stores anything."""
+    without rendered messages is "Open a chat to monitor"; neither stores anything."""
     chromium.load("login_unread.html")
     cli = FakePlaywrightCli(chromium.evaluate)
     script = build_reader_script(SELECTORS)

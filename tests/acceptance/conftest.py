@@ -11,6 +11,7 @@ import pytest
 from acceptance.harness import REPO_ROOT, PageWorker
 from order_extractor import cli
 from order_extractor.config import Settings
+from order_extractor.extractor.rules import StubRule
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +47,7 @@ def cli_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_FILE", str(sa))
     monkeypatch.setenv("READ_INTERVAL_SECONDS", "0.01")
     monkeypatch.setenv("SHEETS_TIMEOUT_SECONDS", "1")
+    monkeypatch.setattr(cli, "build_rule", lambda settings: StubRule())  # no LLM call in CLI tests
     monkeypatch.setattr(cli, "SELECTORS_PATH", REPO_ROOT / "selectors.json")
     return db_path
 

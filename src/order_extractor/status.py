@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TextIO
 
 LOGIN_PROMPT = "Waiting for login: scan the QR code in the browser"  # [R1.2]
-NO_CHAT_PROMPT = "Open the chat group to monitor"  # [R1.3]
+NO_CHAT_PROMPT = "Open a chat to monitor"  # [R1.3]
 _CLEAR_LINE = "\r\x1b[K"
 
 

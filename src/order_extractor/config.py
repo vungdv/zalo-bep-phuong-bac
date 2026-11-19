@@ -46,6 +46,12 @@ class Settings(BaseModel):
     record_backoff_base_seconds: PositiveFloat = 2.0
     record_backoff_max_seconds: PositiveFloat = 300.0
 
+    # Order rule (LLM) [R4.5]
+    llm_url: str = "http://localhost:11434"  # Ollama
+    llm_model: str = "qwen3:4b"
+    llm_timeout_seconds: PositiveFloat = 30.0
+    llm_max_retries: PositiveInt = 2
+
     # Operations [R6]
     retention_days: PositiveInt = 30
     db_path: Path = Path("./data/app.db")

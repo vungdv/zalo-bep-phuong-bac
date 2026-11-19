@@ -189,6 +189,16 @@ def test_open_failure_is_a_sheets_error():
         GoogleSheet(opener, TZ).write_header()
 
 
+def test_forbidden_without_message_explains_how_to_fix():
+    def opener():
+        raise PermissionError  # what gspread raises for HTTP 403 on open_by_key
+
+    with pytest.raises(SheetsError, match="share the sheet with the service account") as info:
+        GoogleSheet(opener, TZ).read_header()
+    assert not info.value.timeout
+    assert "PermissionError" in str(info.value)
+
+
 def test_from_settings_sets_client_timeout_and_opens_tab(monkeypatch):
     client = MagicMock()
     service_account = MagicMock(return_value=client)

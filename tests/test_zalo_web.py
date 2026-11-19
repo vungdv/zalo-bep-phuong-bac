@@ -172,6 +172,15 @@ def test_since_does_not_change_a_known_conversation(repo: MessagesRepo) -> None:
     assert h.new_messages() == [["8000_1001"]]
 
 
+def test_private_chat_uses_the_title_as_the_sender_of_incoming_messages(repo: MessagesRepo) -> None:
+    page = reading([bubble(1000, "2002"), bubble(2000, "0")], key="u7", title="Lan")  # private: no name headers
+    h = Harness(repo, page)
+    h.zalo.poll()
+    rows = h.stored("u7")
+    assert rows["1000_2002"]["sender"] == "Lan"
+    assert rows["2000_0"]["sender"] == "0"  # our own message is not attributed to the peer
+
+
 def test_bubble_without_name_header_gets_the_stored_name(repo: MessagesRepo) -> None:
     h = Harness(repo, reading([bubble(1000, sender="Lan")]))
     h.zalo.poll()

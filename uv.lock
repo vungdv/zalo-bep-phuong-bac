@@ -289,6 +289,7 @@ dependencies = [
     { name = "gspread" },
     { name = "pydantic" },
     { name = "python-dotenv" },
+    { name = "requests" },
     { name = "typer" },
 ]
 
@@ -306,6 +307,7 @@ requires-dist = [
     { name = "gspread", specifier = ">=6.0" },
     { name = "pydantic", specifier = ">=2.6" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "requests", specifier = ">=2.34.2" },
     { name = "typer", specifier = ">=0.12" },
 ]
 

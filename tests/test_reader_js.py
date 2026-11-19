@@ -227,3 +227,13 @@ def test_page_state_oldest() -> None:
     oldest = state.oldest()
     assert oldest is not None and oldest.message_key == "1_1"
     assert PageState.parse({"state": "LOGIN"}).oldest() is None
+
+
+def test_private_chat_conversation_key_has_no_letter_prefix(page: Any) -> None:
+    """A private chat's qid ends with the peer's numeric id (`..._<uid>_9083685608630667625`), unlike `g<id>`."""
+    html = (FIXTURES / "group_chat.html").read_text(encoding="utf-8").replace(GROUP, "9083685608630667625")
+    page.set_content(html)
+    state = json.loads(page.evaluate(SCRIPT))
+    assert state["state"] == "READING" and state["drift"] is None
+    assert state["conversation"]["key"] == "9083685608630667625"
+    assert state["messages"]

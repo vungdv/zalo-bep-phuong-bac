@@ -17,7 +17,7 @@
 ## 1. Overview
 
 A local tool that reads chat messages from **Zalo Web (https://chat.zalo.me)** in a browser controlled by
-**`playwright-cli`**. A human logs in and opens a chat group. The tool then reads the messages of that
+**`playwright-cli`**. A human logs in and opens a chat (private or group). The tool then reads the messages of that
 conversation **one by one**, applies an **order rule** to detect orders (each order is a single number), and
 appends each order to a **Google Sheet** together with its message. Staff tick a **served** checkbox in the
 sheet once the order has been delivered.
@@ -84,7 +84,7 @@ Expected sheet row, assuming the (future) rule reads `2` from this message:
 
 1. WHEN `order-extractor start` runs THE SYSTEM SHALL open (or attach to) the `playwright-cli` session `zalo`. The browser SHALL be headed, use the persistent profile, and be at `https://chat.zalo.me`.
 2. WHILE the login (QR) screen is shown THE SYSTEM SHALL print "Waiting for login: scan the QR code in the browser" and poll without reading messages. Login detection SHALL be checked before the logged-in check and SHALL tolerate an unread-count prefix in the title (e.g. `(3) Zalo - …`).
-3. WHILE logged in but no conversation is open, or the open conversation has no rendered messages yet, THE SYSTEM SHALL print "Open the chat group to monitor" and wait.
+3. WHILE logged in but no conversation is open, or the open conversation has no rendered messages yet, THE SYSTEM SHALL print "Open a chat to monitor" and wait.
 4. THE SYSTEM SHALL NOT click, type, or send anything inside the Zalo UI, except scrolling the message list during backfill and catch-up (R2.4, R2.12).
 5. IF the browser is closed or the session dies THE SYSTEM SHALL stop reading, log an error, and relaunch the session. IF `BROWSER_MAX_RESTARTS` (default 3) consecutive relaunches fail THE SYSTEM SHALL exit non-zero. The counter SHALL reset after a successful read.
 6. The browser profile directory SHALL be git-ignored and treated as a secret (it holds the Zalo login).

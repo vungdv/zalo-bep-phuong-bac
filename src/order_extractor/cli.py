@@ -26,8 +26,9 @@ import typer
 
 from order_extractor.config import ConfigError, Settings
 from order_extractor.db.connection import open_database
+from order_extractor.extractor.llm_rule import LlmRule
 from order_extractor.extractor.order_extractor import OrderExtractor
-from order_extractor.extractor.rules import OrderRule, default_rule
+from order_extractor.extractor.rules import OrderRule
 from order_extractor.lock import AppLock, LockHeld, lock_path_for
 from order_extractor.orchestrator import EXIT_ERROR, Orchestrator, epoch_ms
 from order_extractor.recorder.order_recorder import OrderRecorder
@@ -98,8 +99,8 @@ def build_sheet(settings: Settings) -> Sheet:
     return GoogleSheet.from_settings(settings)
 
 
-def build_rule() -> OrderRule:
-    return default_rule()
+def build_rule(settings: Settings) -> OrderRule:
+    return LlmRule(settings)
 
 
 def build_orchestrator(
@@ -114,7 +115,7 @@ def build_orchestrator(
         reader_script=build_reader_script(selectors),
         since_ms=since_ms,
     )
-    extractor = OrderExtractor(orchestrator, build_rule())
+    extractor = OrderExtractor(orchestrator, build_rule(settings))
     recorder = OrderRecorder.from_settings(orchestrator, OrdersRepo(conn), build_sheet(settings), settings)
     orchestrator.attach(zalo, extractor, recorder)
     return orchestrator

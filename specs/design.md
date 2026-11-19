@@ -109,7 +109,7 @@ sequenceDiagram
 | Event | Emitted by | Payload | Orchestrator reaction |
 |---|---|---|---|
 | `LoginRequired` | ZaloWeb | — | Status "Waiting for login…" (once per transition) |
-| `NoChatOpen` | ZaloWeb | — | Status "Open the chat group to monitor" (once per transition) [R1.3] |
+| `NoChatOpen` | ZaloWeb | — | Status "Open a chat to monitor" (once per transition) [R1.3] |
 | `ZaloReady` | ZaloWeb | `conversation` | Status line shows the conversation |
 | `NewMessages` | ZaloWeb | `list[Message]` (stored, oldest → newest, at/after watermark) | `extractor.handle(messages)` |
 | `SelectorDrift` | ZaloWeb | `reason`, `snapshot_path` | Log WARNING "selectors may be outdated"; status flag [R2.9] |
@@ -277,12 +277,12 @@ flowchart TD
 ```python
 def ingest(self, conv, messages) -> None:
     batch = []
-    for m in sorted(messages, key=lambda m: m.sent_at_ms):          # chronological [R2.2]
+    for m in sorted(messages, key=lambda m: m.sent_at_ms):  # chronological [R2.2]
         if repo.exists(conv.key, m.message_key):
             continue
-        m.sender = m.sender or repo.sender_name(m.sender_uid) or m.sender_uid   # stored senders [R2.7]
-        checked = m.sent_at_ms < conv.start_ms                       # watermark [R2.11]
-        repo.insert_message(conv.key, m, extracted=checked)          # commit per message
+        m.sender = m.sender or repo.sender_name(m.sender_uid) or m.sender_uid  # stored senders [R2.7]
+        checked = m.sent_at_ms < conv.start_ms  # watermark [R2.11]
+        repo.insert_message(conv.key, m, extracted=checked)  # commit per message
         if not checked:
             batch.append(m)
     if batch:
@@ -329,19 +329,20 @@ once per `SELECTOR_ALERT_SECONDS`.
 
 ```python
 class OrderRule(Protocol):
-    def extract(self, message: Message) -> int | None: ...   # the order number, or None if not an order
+    def extract(self, message: Message) -> int | None: ...  # the order number, or None if not an order
+
 
 class OrderExtractor(Colleague):
     def handle(self, messages: list[Message]) -> None:
-        for m in messages:                       # oldest → newest
-            if m.is_self or m.kind != "text":     # shop messages and media never create orders [R4.2]
+        for m in messages:  # oldest → newest
+            if m.is_self or m.kind != "text":  # shop messages and media never create orders [R4.2]
                 continue
             number = self.rule.extract(m)
             if number is not None:
-                self.mediator.notify(NewOrder.from_message(m, number))   # recorder stores it synchronously
-        self.mediator.notify(MessagesChecked(conv, [m.message_key for m in messages]))   # [R4.4]
+                self.mediator.notify(NewOrder.from_message(m, number))  # recorder stores it synchronously
+        self.mediator.notify(MessagesChecked(conv, [m.message_key for m in messages]))  # [R4.4]
 
-    def recover(self) -> None:                   # nothing to recover; ZaloWeb re-emits unchecked messages
+    def recover(self) -> None:  # nothing to recover; ZaloWeb re-emits unchecked messages
         pass
 ```
 
@@ -396,36 +397,39 @@ At most one Sheets job is in flight. The tick never awaits it, so a slow or dead
 regardless of how many orders a backfill produced:
 
 ```python
-def kick(self) -> None:                           # called by the Orchestrator every tick and after store()
+def kick(self) -> None:  # called by the Orchestrator every tick and after store()
     if self.job and not self.job.done():
-        return                                    # one call in flight at most
-    if not self.ready:                            # header check + reconciliation not done yet
-        self.job = create_task(self._prepare())   # also backed off on failure
+        return  # one call in flight at most
+    if not self.ready:  # header check + reconciliation not done yet
+        self.job = create_task(self._prepare())  # also backed off on failure
         return
-    due = orders_repo.due(now(), limit=RECORD_BATCH_MAX)     # status NEW AND next_attempt_at <= now
+    due = orders_repo.due(now(), limit=RECORD_BATCH_MAX)  # status NEW AND next_attempt_at <= now
     if due:
         self.job = create_task(self._flush(due))
 
+
 async def _flush(self, due: list[Order]) -> None:
-    todo = due                                                # orders this call carries
+    todo = due  # orders this call carries
     try:
-        if any(o.attempts > 0 for o in due):                  # §6.1: an earlier attempt may have landed
+        if any(o.attempts > 0 for o in due):  # §6.1: an earlier attempt may have landed
             self.written = await to_thread(sheet.read_order_ids)
         for o in [o for o in due if str(o.id) in self.written]:
-            orders_repo.mark_recorded(o); self.mediator.notify(OrderRecorded(o.id, None))
+            orders_repo.mark_recorded(o)
+            self.mediator.notify(OrderRecorded(o.id, None))
         todo = [o for o in due if str(o.id) not in self.written]
         if todo:
-            rows = await to_thread(sheet.append_rows, todo)    # client timeout = SHEETS_TIMEOUT_SECONDS
+            rows = await to_thread(sheet.append_rows, todo)  # client timeout = SHEETS_TIMEOUT_SECONDS
             for o, row in zip(todo, rows):
-                orders_repo.mark_recorded(o, row); self.written.add(str(o.id))
+                orders_repo.mark_recorded(o, row)
+                self.written.add(str(o.id))
                 self.mediator.notify(OrderRecorded(o.id, row))
-    except SheetsError as e:                                  # includes the client timeout
+    except SheetsError as e:  # includes the client timeout
         for o in todo:
             n = o.attempts + 1
             if n >= RECORD_MAX_ATTEMPTS:
                 orders_repo.mark_failed(o, e)
             else:
-                delay = min(BASE * 2 ** (n - 1), MAX) * uniform(0.5, 1.0)        # jittered backoff
+                delay = min(BASE * 2 ** (n - 1), MAX) * uniform(0.5, 1.0)  # jittered backoff
                 orders_repo.schedule_retry(o, attempts=n, next_attempt_at=now() + delay, error=e)
         self.mediator.notify(RecordFailed(ids, e, next_attempt_at, final=...))
 ```

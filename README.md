@@ -6,8 +6,9 @@ each order to a **Google Sheet**. Staff tick the `served` checkbox in the sheet 
 The tool is read-only: it never types into Zalo. You log in and pick the chat yourself.
 Specs live in [specs/](specs/) ([requirements](specs/requirements.md), [design](specs/design.md), [tasks](specs/tasks.md)).
 
-> **Order rule is a placeholder.** Until the rule is specified (Q-rule), the shipped rule returns no orders, so a
-> normal run reads and stores messages but writes no sheet rows. See [Trying it without the real rule](#trying-it-without-the-real-rule).
+> **Order rule:** a local Qwen model (via [Ollama](https://ollama.com)) reads each customer message and returns the
+> number of portions ordered, for example "Nhà em đặt 3 suất nhé" gives 3. Message text never leaves your machine.
+> Run `ollama pull qwen3:4b` once and keep Ollama running.
 
 ## 1. Prerequisites
 
@@ -57,7 +58,7 @@ SHEET_ID=<your sheet id>
 GOOGLE_SERVICE_ACCOUNT_FILE=./secrets/sa.json
 ```
 
-The rest have working defaults:
+The rest have working defaults (`LLM_URL` and `LLM_MODEL` default to Ollama on `localhost:11434` and `qwen3:4b`):
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -80,7 +81,7 @@ uv run order-extractor start
 
 1. A visible Chromium window opens `chat.zalo.me`. If you are not logged in, scan the QR code with your phone.
    The console shows `Waiting for login: scan the QR code in the browser`.
-2. Open the chat group to monitor. The console shows `Open the chat group to monitor` until you do.
+2. Open a chat to monitor. The console shows `Open a chat to monitor` until you do.
 3. The tool reads the history (backfill), then keeps reading new messages. A status line on the console shows
    login state, conversation, and counts read / found / recorded / failed.
 4. Stop with `Ctrl-C`. Anything unfinished is picked up on the next start.

@@ -16,6 +16,7 @@ from acceptance.harness import (
 from fake_driver import FakeChat, bubble
 from fake_sheet import InMemorySheet
 from order_extractor import cli
+from order_extractor.config import Settings
 from order_extractor.db.connection import open_database
 from order_extractor.events import Message
 from order_extractor.extractor.rules import OrderRule
@@ -113,22 +114,11 @@ async def test_r4_4_every_message_of_a_batch_is_marked_checked(db: Path):
     assert again.seen == []
 
 
-async def test_r4_5_shipped_rule_returns_nothing_for_every_message(db: Path):
-    """R4.5: the rule wired into the application finds no order in any message, so nothing reaches the sheet."""
-    rule = cli.build_rule()
+async def test_r4_5_shipped_rule_is_the_llm_rule(db: Path):
+    """R4.5: the rule wired into the application is the replaceable LLM rule."""
+    rule = cli.build_rule(Settings())
     assert isinstance(rule, OrderRule)
-    for text in ["Shop ơi cho em 2 áo thun đen size M", "10", "lấy 3 cái", "=1+1"]:
-        assert (
-            rule.extract(Message(conversation_key="g1", message_key="1_1", sent_at_ms=1, sender_uid="1", text=text))
-            is None
-        )
-
-    ws = FakeWorksheet(header=list(HEADER))
-    msgs = [bubble(T0 + i, "1001", f"lấy {i + 1} cái", sender="Lan") for i in range(5)]
-    app = App(db, sheet=google_sheet(ws), page=FakeChat(msgs), rule=rule)
-    assert await app.run(max_ticks=6) == EXIT_OK
-    assert all_orders(db) == [] and ws.data == [] and ws.count("append_rows") == 0
-    assert all(m["extracted"] == 1 for m in all_messages(db))
+    assert type(rule).__name__ == "LlmRule"
 
 
 async def test_r4_5_the_rule_is_replaceable(db: Path):

@@ -10,7 +10,7 @@
   "self_item_class": "me",
   "message_item": "[id^=\"bb_msg_id_\"]",
   "qid_node": "[data-qid]",
-  "qid_regex": "^(?<ref>[^@]+)@(?<ts>\\d+)_(?<uid>\\d+)_(?<conv>[a-z]\\d+)$",
+  "qid_regex": "^(?<ref>[^@]+)@(?<ts>\\d+)_(?<uid>\\d+)_(?<conv>[a-z]?\\d+)$",
   "message_text": "[data-component=\"message-text-content\"]",
   "sender_name": ".message-sender-name-content",
   "time_label": ".card-send-time__sendTime",

@@ -299,6 +299,7 @@ class ZaloWeb(Colleague):
         now = self.clock()
         batch: list[Message] = []
         inserted = 0
+        peer = conv.title if not conv.is_group else None  # a private chat shows no sender names: the peer is the title
         for raw in sorted(messages, key=lambda m: m.sent_at_ms):
             if self.repo.exists(conv.key, raw.message_key):
                 continue
@@ -307,7 +308,10 @@ class ZaloWeb(Colleague):
                 message_key=raw.message_key,
                 sent_at_ms=raw.sent_at_ms,
                 sender_uid=raw.sender_uid,
-                sender=raw.sender or self.repo.sender_name(raw.sender_uid) or raw.sender_uid,
+                sender=raw.sender
+                or self.repo.sender_name(raw.sender_uid)
+                or (None if raw.is_self else peer)
+                or raw.sender_uid,
                 is_self=raw.is_self,
                 kind=raw.kind,
                 text=raw.text,
