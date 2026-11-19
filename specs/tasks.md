@@ -26,6 +26,12 @@
 
 - [ ] **T6. BrowserDriver**: `ensure_open`, `eval_json` (script as one argv element, no shell), `snapshot` into `data/snapshots/`, `scroll_messages`, timeouts, and the consecutive-restart counter. Measure the CPU cost of one `eval` every 2 s against NFR4 and record the number here.
   _Tests:_ the subprocess is mocked; covers session-missing → open, eval JSON error, timeout, counter reset after success, exhaustion. [R1.1, R1.5, NFR4]
+  _NFR4 measurement (2026-11-19, Apple Silicon macOS, playwright-cli 0.1.14):_ CPU of the `playwright-cli` client
+  process per call, measured with `getrusage(RUSAGE_CHILDREN)` over 20 calls without touching the Zalo session:
+  `--version` ≈ 85 ms, `list --json` ≈ 98 ms (wall ≈ 85–95 ms). One call every 2 s ≈ **4.3–4.9 % of one core**
+  (≈ 0.6 % of the 8-core machine). Not included: the daemon/browser side of a real `eval` (needs a logged-in
+  session; re-measure in T16). This is at the NFR4 limit for one core; if T16 shows > 5 %, use the design §1
+  fallback (one long-lived `playwright-cli` process or a longer `READ_INTERVAL_SECONDS`).
 - [ ] **T7. reader.js**: state detection in order (LOGIN, then NO_CHAT including empty conversations, then READING), conversation key from the qid suffix, `senders` map, message parsing, `at_bottom`, all driven by `selectors.json`.
   _Tests:_ each T2b fixture → expected JSON (headless Playwright), including an unread-count title. [R1.2, R1.3, R2.1, R2.6–R2.8, R2.13]
 - [ ] **T8. messages_repo**: conversations (`ensure_conversation` sets the watermark once), messages (idempotent insert, `exists`, `unchecked_messages`, `mark_checked`, `unmark_checked`, tombstone `purge`), senders (upsert, lookup, purge).
