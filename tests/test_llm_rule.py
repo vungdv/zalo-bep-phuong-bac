@@ -10,7 +10,7 @@ import requests
 
 from order_extractor.config import Settings
 from order_extractor.events import Message
-from order_extractor.extractor.llm_rule import SCHEMA, LlmRule
+from order_extractor.extractor.llm_rule import TOOL_NAME, TOOLS, LlmRule
 from order_extractor.extractor.rules import OrderRule
 
 
@@ -21,7 +21,8 @@ def msg(text: str | None) -> Message:
 def rule_with(payload: dict | None = None, error: Exception | None = None):
     session = MagicMock()
     response = MagicMock()
-    response.json.return_value = {"message": {"content": json.dumps(payload)}}
+    calls = [] if payload is None else [{"function": {"name": TOOL_NAME, "arguments": payload}}]
+    response.json.return_value = {"message": {"role": "assistant", "content": "", "tool_calls": calls}}
     if error:
         response.raise_for_status.side_effect = error
     session.post.return_value = response
@@ -29,19 +30,19 @@ def rule_with(payload: dict | None = None, error: Exception | None = None):
 
 
 def test_order_message_returns_the_number():
-    rule, session = rule_with({"is_order": True, "number": 3})
+    rule, session = rule_with({"number": 3})
     assert rule.extract(msg("Nhà em đặt 3 suất nhé")) == 3
     (url,), kwargs = session.post.call_args
     assert url == "http://h:1/api/chat"
     assert kwargs["timeout"] == 7.0
     body = kwargs["json"]
-    assert body["model"] == "m" and body["format"] == SCHEMA and body["think"] is False and body["stream"] is False
+    assert body["model"] == "m" and body["tools"] == TOOLS and body["think"] is False and body["stream"] is False
     assert body["options"] == {"temperature": 0}
     assert body["messages"][1] == {"role": "user", "content": "<message>Nhà em đặt 3 suất nhé</message>"}
 
 
 @pytest.mark.parametrize(
-    "payload", [{"is_order": False, "number": 0}, {"is_order": True, "number": 0}, {"is_order": True, "number": True}]
+    "payload", [None, {"number": 0}, {"number": True}, {"number": -2}]
 )
 def test_not_an_order_returns_none(payload):
     rule, _ = rule_with(payload)
@@ -50,21 +51,29 @@ def test_not_an_order_returns_none(payload):
 
 @pytest.mark.parametrize("text", [None, "", "   "])
 def test_blank_text_never_calls_the_model(text):
-    rule, session = rule_with({"is_order": True, "number": 1})
+    rule, session = rule_with({"number": 1})
     assert rule.extract(msg(text)) is None
     session.post.assert_not_called()
 
 
 def test_http_error_propagates_so_the_message_stays_unchecked():
-    rule, _ = rule_with({}, error=requests.HTTPError("500"))
+    rule, _ = rule_with(None, error=requests.HTTPError("500"))
     with pytest.raises(requests.HTTPError):
         rule.extract(msg("đặt 3 suất"))
 
 
-def test_malformed_answer_raises():
+def test_string_arguments_are_parsed():
     session = MagicMock()
-    session.post.return_value.json.return_value = {"message": {"content": "not json"}}
-    with pytest.raises(json.JSONDecodeError):
+    call = {"function": {"name": TOOL_NAME, "arguments": '{"number": 4}'}}
+    session.post.return_value.json.return_value = {"message": {"tool_calls": [call]}}
+    assert LlmRule(Settings(), session).extract(msg("đặt 4 suất")) == 4
+
+
+def test_malformed_tool_call_raises():
+    session = MagicMock()
+    call = {"function": {"name": TOOL_NAME, "arguments": {}}}
+    session.post.return_value.json.return_value = {"message": {"tool_calls": [call]}}
+    with pytest.raises(KeyError):
         LlmRule(Settings(), session).extract(msg("đặt 3 suất"))
 
 

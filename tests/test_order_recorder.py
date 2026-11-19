@@ -115,28 +115,27 @@ async def test_kick_without_work_starts_no_flush(mediator, repo, sheet, clock):
 # --- header check [R5.3] ------------------------------------------------------------------------------------
 
 
-async def test_empty_header_is_created_with_checkbox_then_rows_have_served_false(mediator, repo, sheet, clock):
+async def test_empty_header_is_created_then_rows_are_number_quantity_customer_message(mediator, repo, sheet, clock):
     sheet.header = []
     recorder = make(mediator, repo, sheet, clock)
     await ready(recorder)
     assert sheet.header == list(HEADER)
-    assert sheet.validation_applied
     recorder.store(new_order(2, sent_at_ms=1_795_059_480_000))  # 2026-11-19 03:38 UTC
     await run(recorder)
-    assert sheet.rows == [["1", "2026-11-19 10:38", "Nhóm khách sỉ", "Lan", "cho em 2 áo", 2, False]]
+    assert sheet.rows == [["1", 2, "Lan", "cho em 2 áo"]]
     assert mediator.events == [OrderRecorded(order_id=1, sheet_row=2)]
     assert repo.get(1).status == "RECORDED"
     assert repo.get(1).sheet_row == 2
 
 
 async def test_header_mismatch_blocks_and_writes_nothing(mediator, repo, sheet, clock):
-    sheet.header = ["order_id", "time", "sender", "conversation", "messages", "order", "served"]
+    sheet.header = ["Quantity", "Number", "Customer", "Message"]
     recorder = make(mediator, repo, sheet, clock)
     recorder.store(new_order(1))
     await ready_blocked(recorder)
     blocked = mediator.of_type(RecorderBlocked)
     assert len(blocked) == 1
-    assert "mismatch" in blocked[0].reason and "'sender', 'conversation'" in blocked[0].reason
+    assert "mismatch" in blocked[0].reason and "'Quantity', 'Number'" in blocked[0].reason
     assert sheet.writes == []
     assert sheet.calls == ["read_header"]
     # blocked for good: no further jobs, recover() does not unblock
@@ -532,16 +531,16 @@ async def test_wait_idle_without_job_is_true(mediator, repo, sheet, clock):
     assert recorder.job_state == "idle"
 
 
-# --- served is human-owned [R5.4] ---------------------------------------------------------------------------
+# --- existing rows are never rewritten [R5.4] ---
 
 
-async def test_served_never_written_after_append(mediator, repo, sheet, clock):
+async def test_existing_rows_never_written_after_append(mediator, repo, sheet, clock):
     sheet.header = []
     recorder = make(mediator, repo, sheet, clock)
     await ready(recorder)
     recorder.store(new_order(1))
     await run(recorder)
-    sheet.rows[0][6] = True  # staff tick "served"
+    sheet.rows[0].append(True)  # a human adds a cell to the right of the app's columns
 
     # more traffic: a retry that re-reads, a lost response, a restart with reconciliation
     recorder.store(new_order(2))
@@ -554,8 +553,8 @@ async def test_served_never_written_after_append(mediator, repo, sheet, clock):
     restarted.store(new_order(3))
     await run(restarted)
 
-    assert sheet.rows[0][6] is True
-    assert [r[6] for r in sheet.rows[1:]] == [False, False]
+    assert sheet.rows[0][4:] == [True]
+    assert all(len(r) == 4 for r in sheet.rows[1:])
     # the only writes ever made: the header once, then appends of new rows below the existing ones
     assert sheet.writes == [("header", 1, 1), ("append", 2, 1), ("append", 3, 1), ("append", 4, 1)]
 

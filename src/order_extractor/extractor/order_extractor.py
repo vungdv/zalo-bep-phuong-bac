@@ -15,6 +15,7 @@ be marked checked while we do not know whether it holds an order.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 
 from order_extractor.events import Colleague, Mediator, Message, MessagesChecked, NewOrder
@@ -34,7 +35,7 @@ class OrderExtractor(Colleague):
         keys_by_conversation: dict[str, list[str]] = {}
         for m in messages:
             keys = keys_by_conversation.setdefault(m.conversation_key, [])
-            if m.is_self or m.kind != "text":  # shop messages and media never create orders [R4.2]
+            if m.kind != "text":  # media never creates orders
                 keys.append(m.message_key)
                 continue
             try:
@@ -50,7 +51,9 @@ class OrderExtractor(Colleague):
                 )
                 continue  # left unchecked: retried by recovery on the next start [R3.4, R3.5]
             keys.append(m.message_key)
+            print(f"order_extractor: {m.sender!r} {m.text!r} -> {order}", file=sys.stderr)
             if order is None:
+                print("No order found!", file=sys.stderr)
                 continue
             log.info(
                 "order_found",
@@ -65,6 +68,7 @@ class OrderExtractor(Colleague):
         """Run the rule on one message; raises if the rule raises or returns a non-int."""
         number = self.rule.extract(message)
         if number is None:
+            print(f"Rule returned None for message {message.message_key!r} in conversation {message.conversation_key!r}", file=sys.stderr)
             return None
         if isinstance(number, bool) or not isinstance(number, int):
             raise TypeError("order rule must return int or None")

@@ -1,7 +1,7 @@
 # Zalo Order Extractor
 
 Reads the messages of the chat that is open in **Zalo Web** (`chat.zalo.me`), applies an order rule, and appends
-each order to a **Google Sheet**. Staff tick the `served` checkbox in the sheet when the order is delivered.
+each order to a **Google Sheet**.
 
 The tool is read-only: it never types into Zalo. You log in and pick the chat yourself.
 Specs live in [specs/](specs/) ([requirements](specs/requirements.md), [design](specs/design.md), [tasks](specs/tasks.md)).
@@ -37,10 +37,10 @@ Run every command from the repo root. `start` reads `./selectors.json` relative 
 4. **Share the sheet** with the service account's email (the `client_email` in the JSON), as **Editor**.
 5. Copy the sheet id from its URL: `https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit`.
 
-Leave row 1 empty. On first start the tool writes the header and adds the `served` checkbox column:
+Leave row 1 empty. On first start the tool writes the header:
 
 ```
-order_id | time | conversation | sender | messages | order | served
+Number | Quantity | Customer | Message
 ```
 
 If row 1 already holds something different, the tool exits with code 4 and writes nothing.
@@ -117,7 +117,7 @@ It never creates duplicate sheet rows: column A of the sheet is checked first.
 The test rule in [tests/rules_for_tests.py](tests/rules_for_tests.py) treats the first number in a message as the
 order (`FirstIntegerRule`). To try the full flow, temporarily make `build_rule` in
 [src/order_extractor/cli.py](src/order_extractor/cli.py) return it instead of `default_rule()`, run `start`, and
-send "cho em 2 áo" in a test group. Expect one row with order `2` and `served` unticked. Revert this before real use.
+send "cho em 2 áo" in a test group. Expect one row with Quantity `2`, the sender as Customer, and the message text. Revert this before real use.
 
 ## 8. Troubleshooting
 

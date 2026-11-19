@@ -122,7 +122,7 @@ async def test_r3_4_messages_are_marked_checked_only_after_their_orders_exist(db
     assert await second.run(until=lambda: len(ws.data) == 2, max_ticks=100) == EXIT_OK
     assert sorted(rule.seen) == sorted(m["message_key"] for m in msgs)
     assert [o.number for o in all_orders(db)] == [1, 2]
-    assert sorted(r[5] for r in ws.data) == [1, 2]
+    assert sorted(r[1] for r in ws.data) == [1, 2]
     assert [m["extracted"] for m in all_messages(db)] == [1, 1]
 
 
@@ -148,7 +148,7 @@ async def test_r3_5_restart_recovers_unchecked_messages_and_unrecorded_orders(db
     second = App(db, sheet=google_sheet(up), page=NO_CHAT, rule=rule)
     assert await second.run(until=lambda: len(up.data) == 2, max_ticks=100) == EXIT_OK
     assert rule.seen == [late.message_key]
-    assert sorted((r[3], r[5]) for r in up.data) == [("Lan", 3), ("Minh", 4)]
+    assert sorted((r[2], r[1]) for r in up.data) == [("Lan", 3), ("Minh", 4)]
     assert {o.status for o in all_orders(db)} == {"RECORDED"}
 
 

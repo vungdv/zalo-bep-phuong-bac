@@ -216,7 +216,7 @@ async def test_r2_11_first_open_history_creates_no_orders(db: Path):
     stored = all_messages(db)
     assert len(stored) == 6 and all(m["extracted"] == 1 for m in stored)
     assert rule.seen == [live["message_key"]]
-    assert [row[4] for row in ws.data] == ["thêm 3 cái"]
+    assert [row[3] for row in ws.data] == ["thêm 3 cái"]
     conv = db_rows(db, "SELECT start_ms, first_seen FROM conversations")[0]
     assert T0 + 3_600_000 <= conv["start_ms"] <= T0 + 3_660_000
 
@@ -259,7 +259,7 @@ async def test_r2_5_r2_11_switching_conversation_reads_the_new_one_with_its_own_
     assert set(convs) == {"g1", "g2"}
     assert convs["g2"] >= convs["g1"] + 600_000
     assert len(all_messages(db)) == 8
-    assert [(row[2], row[3], row[5]) for row in ws.data] == [("Nhóm 2", "Hà", 6)]
+    assert [(row[2], row[1]) for row in ws.data] == [("Hà", 6)]
     ready = [e.conversation.key for e in app.of_type("ZaloReady")]
     assert ready == ["g1", "g2"]
 
@@ -316,7 +316,7 @@ async def test_r2_7_bubble_without_a_name_header_gets_the_stored_sender_name(db:
     assert await app.run(until=lambda: len(ws.data) >= 1, max_ticks=100) == EXIT_OK
 
     assert [m["sender"] for m in all_messages(db)] == ["Lan", "Lan"]
-    assert [row[3] for row in ws.data] == ["Lan"]
+    assert [row[2] for row in ws.data] == ["Lan"]
 
 
 async def test_r2_7_unknown_sender_is_stored_as_uid_and_only_later_rows_get_the_name(db: Path):
@@ -533,10 +533,10 @@ async def test_r2_real_reader_group_chat_end_to_end(db: Path, chromium: PageWork
     }
     text_customer = {k for k, m in stored.items() if m["kind"] == "text" and not m["is_self"]}
     assert set(rule.seen) == text_customer  # media and self never reach the rule (R4.2)
-    rows = [row[1:] for row in ws.data]
+    rows = [row[1:] for row in ws.data]  # without Number
     assert rows == [
-        ["2026-11-13 11:38", "Nhóm Khách Sỉ Test", "Lan", "Shop ơi cho em 2 áo thun đen size M", 2, False],
-        ["2026-11-13 11:38", "Nhóm Khách Sỉ Test", "Lan", "=SUM(1,2)\ndòng 2", 1, False],
+        [2, "Lan", "Shop ơi cho em 2 áo thun đen size M"],
+        [1, "Lan", "=SUM(1,2)\ndòng 2"],
     ]
     appends = [k for name, k in ws.calls if name == "append_rows"]
     assert all(str(k["value_input_option"]) in ("RAW", "ValueInputOption.raw") for k in appends)

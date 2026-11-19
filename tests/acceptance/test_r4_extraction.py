@@ -30,7 +30,7 @@ EXAMPLE = "Shop ơi cho em 2 áo thun đen size M"
 
 async def test_r4_requirements_example_becomes_the_expected_sheet_row(db: Path):
     """§1 example, R4.1, R4.3, R5.1, R5.2, R5.4: "Lan: Shop ơi cho em 2 áo thun đen size M" in "Nhóm khách sỉ" at
-    2026-11-19 10:38 → one row: order_id, time in TZ_DISPLAY, conversation, Lan, the text, 2, served unticked."""
+    2026-11-19 10:38 → one row: Number, 2, Lan, the text."""
     ws = FakeWorksheet()  # a fresh sheet: the header is created first
     chat = FakeChat([bubble(T0, "3808620345438131900", EXAMPLE, sender="Lan")], title="Nhóm khách sỉ")
     app = App(db, sheet=google_sheet(ws), page=chat, rule=FirstIntegerRule())
@@ -38,7 +38,7 @@ async def test_r4_requirements_example_becomes_the_expected_sheet_row(db: Path):
 
     [order] = all_orders(db)
     assert ws.header == list(HEADER)
-    assert ws.data == [[str(order.id), "2026-11-19 10:38", "Nhóm khách sỉ", "Lan", EXAMPLE, 2, False]]
+    assert ws.data == [[str(order.id), 2, "Lan", EXAMPLE]]
     assert order.status == "RECORDED" and order.sheet_row == 2
     assert [e.order_id for e in app.of_type("OrderRecorded")] == [order.id]
 

@@ -93,43 +93,38 @@ async def test_r5_2_values_are_written_raw_so_formulas_are_never_run(db: Path, t
     ws = FakeWorksheet()
     app = App(db, sheet=google_sheet(ws), page=FakeChat([bubble(T0, "1001", text, sender="Lan")]))
     assert await app.run(until=lambda: len(ws.data) == 1, max_ticks=100) == EXIT_OK
-    assert ws.data[0][4] == text
+    assert ws.data[0][3] == text
     for name, kwargs in ws.writes():
         if name in ("update", "append_rows"):
             assert str(kwargs["value_input_option"]).upper().endswith("RAW"), (name, kwargs)
 
 
-async def test_r5_2_columns_and_time_in_tz_display(db: Path, monkeypatch):
-    """R5.2: columns order_id, time, conversation, sender, messages, order, served; `time` is the send time in
-    TZ_DISPLAY (the adapter is built from settings, as the application does)."""
+async def test_r5_2_columns_number_quantity_customer_message(db: Path):
+    """R5.2: columns Number, Quantity, Customer, Message; Customer is the message's sender."""
     ws = FakeWorksheet()
-    patch_gspread(monkeypatch, ws)
-    adapter = GoogleSheet.from_settings(Settings(sheet_id="x", tz_display="UTC"))
-    app = App(db, sheet=adapter, page=order_chat(), tz_display="UTC")
+    app = App(db, sheet=google_sheet(ws), page=order_chat())
     assert await app.run(until=lambda: len(ws.data) == 1, max_ticks=100) == EXIT_OK
-    assert ws.header == ["order_id", "time", "conversation", "sender", "messages", "order", "served"]
-    assert ws.data[0][1] == "2026-11-19 03:38"
+    assert ws.header == ["Number", "Quantity", "Customer", "Message"]
+    assert ws.data[0][1:3] == [1, "Lan"]
 
 
 # --- R5.3 ----------------------------------------------------------------------------------------------------
 
 
-async def test_r5_3_empty_header_is_created_with_a_served_checkbox(db: Path):
-    """R5.3: an empty header row is written and checkbox validation is applied to the `served` column."""
+async def test_r5_3_empty_header_is_created(db: Path):
+    """R5.3: an empty header row is written."""
     ws = FakeWorksheet()
     app = App(db, sheet=google_sheet(ws), page=NO_CHAT)
     assert await app.run(until=lambda: bool(ws.header), max_ticks=100) == EXIT_OK
     assert ws.header == list(HEADER)
-    [(range_name, condition)] = ws.validations
-    assert range_name.startswith("G") and "BOOLEAN" in str(condition).upper()
 
 
 @pytest.mark.parametrize(
     "header",
     [
-        ["order_id", "time", "conversation", "sender", "messages", "order", "served", "notes"],
-        ["time", "order_id", "conversation", "sender", "messages", "order", "served"],
-        ["order_id", "time", "conversation", "sender", "message", "order", "served"],
+        ["Number", "Quantity", "Customer", "Message", "notes"],
+        ["Quantity", "Number", "Customer", "Message"],
+        ["Number", "Quantity", "Customer", "Messages"],
     ],
 )
 async def test_r5_3_header_mismatch_exits_non_zero_and_writes_nothing(db: Path, header: list[str], caplog):
@@ -159,7 +154,7 @@ def test_r5_3_cli_start_names_the_mismatch_and_exits_non_zero(cli_env: Path, mon
 
 
 async def test_r5_3_header_with_trailing_blank_cells_is_accepted(db: Path):
-    """R5.3: trailing empty cells after `served` are not a mismatch."""
+    """R5.3: trailing empty cells after the last column are not a mismatch."""
     ws = FakeWorksheet(header=[*HEADER, "", ""])
     app = App(db, sheet=google_sheet(ws), page=order_chat())
     assert await app.run(until=lambda: len(ws.data) == 1, max_ticks=100) == EXIT_OK
@@ -168,25 +163,23 @@ async def test_r5_3_header_with_trailing_blank_cells_is_accepted(db: Path):
 # --- R5.4 ----------------------------------------------------------------------------------------------------
 
 
-async def test_r5_4_served_is_written_unticked_and_never_touched_again(db: Path):
-    """R5.4: rows are appended with served unticked; after a human ticks it, later work never writes it."""
+async def test_r5_4_existing_rows_are_never_rewritten(db: Path):
+    """R5.4: later work only appends; a cell a human added next to an existing row is never overwritten."""
     ws = FakeWorksheet(header=list(HEADER))
     chat = order_chat(1)
     app = App(db, sheet=google_sheet(ws), page=chat)
-    ticked = {"done": False}
+    edited = {"done": False}
 
     def human(n: int) -> None:
-        if ws.data and not ticked["done"]:
-            ws.data[0][6] = True  # staff tick "served"
-            ticked["done"] = True
+        if ws.data and not edited["done"]:
+            ws.data[0].append("done")  # staff note to the right of the app's columns
+            edited["done"] = True
             chat.append(bubble(T0 + 60_000, "1002", "lấy 8", sender="Minh"))
 
     app.on_tick.append(human)
     assert await app.run(until=lambda: len(ws.data) == 2, max_ticks=200) == EXIT_OK
-    assert [row[6] for row in ws.data] == [True, False]
+    assert ws.data[0][4:] == ["done"]
     assert [name for name, _ in ws.writes()] == ["append_rows", "append_rows"]
-    for kwargs in append_kwargs(ws):
-        assert all(row[6] is False for row in kwargs["values"])
 
 
 # --- R5.5 ----------------------------------------------------------------------------------------------------
