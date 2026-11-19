@@ -3,6 +3,10 @@
 `FakeDriver.eval_json` answers from `queue` first (dicts or exceptions), then from `page` (a dict, an exception,
 or a `FakeChat`). `FakeChat` models a virtualized message list: only `window` bubbles render, scrolling moves the
 window, and `scroll_top` is 0 at the start of the chat.
+
+Failure injection: `fail_scroll(exc, kind=...)` makes the next `scroll_messages` ("up"), `scroll_to_bottom`
+("bottom") or either ("any") raise `exc` without moving the list; `fail_read(exc, at=n)` makes the n-th
+`eval_json` call (1-based, counted from construction) raise `exc`, e.g. a read in the middle of a backfill.
 """
 
 from __future__ import annotations
@@ -122,8 +126,22 @@ class FakeDriver:
         self.evals = 0
         self.opened = 0
         self.open_error: Exception | None = None
-        self.scrolls: list[int | str] = []
+        self.scrolls: list[int | str] = []  # successful scrolls only
         self.snapshots: list[Path] = []
+        self.scroll_failures: list[tuple[str, BaseException]] = []
+        self.read_failures: dict[int, BaseException] = {}
+
+    def fail_scroll(self, exc: BaseException, *, kind: str = "any", times: int = 1) -> None:
+        self.scroll_failures.extend((kind, exc) for _ in range(times))
+
+    def fail_read(self, exc: BaseException, *, at: int) -> None:
+        self.read_failures[at] = exc
+
+    def _scroll_failure(self, kind: str) -> None:
+        for i, (wanted, exc) in enumerate(self.scroll_failures):
+            if wanted in (kind, "any"):
+                del self.scroll_failures[i]
+                raise exc
 
     @property
     def chat(self) -> FakeChat | None:
@@ -136,6 +154,8 @@ class FakeDriver:
 
     def eval_json(self, js: str) -> Any:
         self.evals += 1
+        if self.evals in self.read_failures:
+            raise self.read_failures.pop(self.evals)
         item = self.queue.pop(0) if self.queue else self.page
         if isinstance(item, FakeChat):
             item = item.render()
@@ -151,6 +171,7 @@ class FakeDriver:
         return path
 
     def scroll_messages(self, dy: int) -> ScrollPosition:
+        self._scroll_failure("up")
         self.scrolls.append(dy)
         if self.chat is not None:
             self.chat.scroll(dy)
@@ -158,6 +179,7 @@ class FakeDriver:
         return ScrollPosition(0, CLIENT_HEIGHT, CLIENT_HEIGHT)
 
     def scroll_to_bottom(self) -> ScrollPosition:
+        self._scroll_failure("bottom")
         self.scrolls.append("bottom")
         if self.chat is not None:
             self.chat.to_bottom()

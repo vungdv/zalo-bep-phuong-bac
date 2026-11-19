@@ -12,6 +12,10 @@ Public API (called by the Orchestrator):
 Backfill runs on the first READING poll of a conversation in this run (also after a restart or a switch) and as
 catch-up when the list returns to the bottom with a gap [R2.4, R2.5, R2.12]. Every screen goes through `ingest`.
 
+Scroll-back guarantee [R2.4, NFR1]: once backfill scrolls the list up, `_tool_scrolled` stays set until a
+`scroll_to_bottom()` succeeds. Backfill scrolls back on every exit path (try/finally), and if that fails the next
+`poll()` scrolls to the bottom before reading. Tool-initiated scrolling never counts as the human scrolling up.
+
 Messages are committed before `NewMessages` is emitted (persist before notify).
 """
 
@@ -77,7 +81,8 @@ class ZaloWeb(Colleague):
         self.clock = clock
         self.sleep = sleep
         self.snapshot_dir = snapshot_dir if snapshot_dir is not None else settings.db_path.parent / "snapshots"
-        self.was_scrolled_up = False
+        self.was_scrolled_up = False  # the *human* scrolled up (catch-up pending) [R2.12]
+        self._tool_scrolled = False  # backfill scrolled up and has not yet returned to the bottom [R2.4]
         self.page_state: str | None = None  # last announced state: LOGIN / NO_CHAT / READING
         self.conversation: ConversationRow | None = None
         self._empty_since: int | None = None
@@ -92,6 +97,8 @@ class ZaloWeb(Colleague):
             self._browser_failed(exc)
 
     def poll(self) -> None:
+        if self._tool_scrolled and not self._scroll_back():
+            return
         state = self._read()
         if state is None:
             return
@@ -113,9 +120,10 @@ class ZaloWeb(Colleague):
             return
         if not state.at_bottom:
             # The human is reading history: keep ingesting what renders, remember to check for a gap [R2.12].
-            if not self.was_scrolled_up:
-                log.warning("live_reading_paused", extra={"conversation_key": self.conversation.key})
-            self.was_scrolled_up = True
+            if not self._tool_scrolled:  # our own scrolling is not the human reading history
+                if not self.was_scrolled_up:
+                    log.warning("live_reading_paused", extra={"conversation_key": self.conversation.key})
+                self.was_scrolled_up = True
             self.ingest(state.messages)
             return
         if self.was_scrolled_up:
@@ -173,8 +181,8 @@ class ZaloWeb(Colleague):
             return 0
         gathered = 0
         top_reads = 0
-        scrolled = False
         reason = "screen_limit"
+        reported = False  # a failure was already reported: a failing scroll-back must not report it twice
         try:
             for _ in range(self.settings.backfill_max_messages + 2):
                 oldest = state.oldest()
@@ -195,12 +203,13 @@ class ZaloWeb(Colleague):
                     reason = ""
                 if reason:
                     break
+                self._tool_scrolled = True  # before the call: a timed-out scroll may still have moved the list
                 self.driver.scroll_messages(-self._viewport(state))
-                scrolled = True
                 self.sleep(BACKFILL_WAIT_SECONDS)
                 next_state = self._read()
                 if next_state is None:
-                    return gathered  # browser died or drift; the next READING poll starts over
+                    reported = True  # browser died or drift; the next READING poll starts over
+                    return gathered
                 if next_state.state != "READING" or next_state.conversation is None or next_state.drift:
                     reason = "page_changed"
                     break
@@ -209,13 +218,28 @@ class ZaloWeb(Colleague):
                     break
                 self.repo.upsert_senders(next_state.senders, self.clock())
                 state = next_state
-            if scrolled:
-                self.driver.scroll_to_bottom()
         except BrowserError as exc:
+            reported = True
             self._browser_failed(exc)
             return gathered
+        finally:
+            if self._tool_scrolled:
+                self._scroll_back(report=not reported)
         log.info("backfill_done", extra={"conversation_key": conv.key, "count": gathered, "reason": reason})
         return gathered
+
+    def _scroll_back(self, *, report: bool = True) -> bool:
+        """Return the list to the bottom after tool scrolling; clears `_tool_scrolled` only on success [R2.4]."""
+        try:
+            self.driver.scroll_to_bottom()
+        except BrowserError as exc:
+            if report:
+                self._browser_failed(exc)
+            else:
+                log.warning("scroll_back_failed", extra={"error_type": type(exc).__name__})
+            return False
+        self._tool_scrolled = False
+        return True
 
     @staticmethod
     def _viewport(state: PageState) -> int:

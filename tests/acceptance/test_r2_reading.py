@@ -560,12 +560,6 @@ async def test_r2_real_reader_group_chat_end_to_end(db: Path, chromium: PageWork
     assert all(str(k["value_input_option"]) in ("RAW", "ValueInputOption.raw") for k in appends)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: if the final scroll-to-bottom of a backfill fails once (eval timeout), the list is left scrolled "
-    "up; the re-entry backfill stops at once (oldest rendered stored) without returning to the bottom, so live "
-    "reading stalls until a human scrolls (zalo/zalo_web.py:212-216; R2.4 'then return to the bottom', NFR1)",
-)
 async def test_r2_4_backfill_returns_to_the_bottom_even_after_a_transient_scroll_failure(db: Path):
     """R2.4, NFR1: one timed-out scroll-to-bottom at the end of a backfill must not stop live reading: a message
     sent afterwards is still stored within a few polls without any human action."""

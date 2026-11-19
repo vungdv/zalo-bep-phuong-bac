@@ -533,13 +533,64 @@ def test_browser_failure_during_backfill_emits_browser_died(repo: MessagesRepo) 
     assert h.zalo.conversation is None  # the next READING poll backfills again
 
 
-def test_read_failure_during_backfill_stops_without_scrolling_back(repo: MessagesRepo) -> None:
+def test_read_failure_during_backfill_still_scrolls_back(repo: MessagesRepo) -> None:
     h = Harness(repo)
     h.driver.queue = [reading([bubble(5000)]), BrowserError("gone")]
     h.driver.page = reading([bubble(5000)])
     h.zalo.poll()
-    assert h.driver.scrolls == [-450]
+    assert h.driver.scrolls == [-450, "bottom"]
     assert h.mediator.types[-1] == "BrowserDied"
+    assert not h.zalo._tool_scrolled
+
+
+def test_mid_backfill_read_failure_on_a_chat_returns_to_the_bottom(repo: MessagesRepo) -> None:
+    chat = chat_of(12)
+    h = Harness(repo, chat)
+    h.driver.fail_read(BrowserTimeout("eval timed out"), at=2)  # the read after the first scroll up
+    h.zalo.poll()
+    assert h.mediator.types[-1] == "BrowserDied"
+    assert h.driver.scrolls == [-450, "bottom"] and chat.at_bottom
+
+
+def test_failed_scroll_back_is_retried_at_the_start_of_the_next_poll(repo: MessagesRepo) -> None:
+    chat = chat_of(12)
+    h = Harness(repo, chat)
+    h.driver.fail_scroll(BrowserTimeout("eval timed out"), kind="bottom")
+    h.zalo.poll()
+    assert not chat.at_bottom and h.zalo._tool_scrolled
+    assert h.mediator.types[-1] == "BrowserDied"
+    h.zalo.poll()
+    assert chat.at_bottom and not h.zalo._tool_scrolled
+    assert h.driver.scrolls.count("bottom") == 1
+    assert not h.zalo.was_scrolled_up  # our own scrolling is not the human reading history
+    chat.append(bubble(500_000))
+    h.zalo.poll()
+    assert "500000_1001" in h.stored()
+
+
+def test_scroll_back_failing_again_at_poll_start_follows_the_error_path(repo: MessagesRepo) -> None:
+    chat = chat_of(12)
+    h = Harness(repo, chat)
+    h.driver.fail_scroll(BrowserTimeout("eval timed out"), kind="bottom", times=2)
+    h.zalo.poll()
+    evals = h.driver.evals
+    h.zalo.poll()
+    assert h.driver.evals == evals  # nothing read while the list is still scrolled up by us
+    assert h.zalo._tool_scrolled
+    assert h.mediator.types[-2:] == ["BrowserDied", "BrowserDied"]
+    h.zalo.poll()
+    assert chat.at_bottom and not h.zalo._tool_scrolled
+
+
+def test_scroll_up_failure_with_a_failing_scroll_back_reports_once(repo: MessagesRepo) -> None:
+    chat = chat_of(12)
+    h = Harness(repo, chat)
+    h.driver.fail_scroll(BrowserError("gone"), kind="any", times=2)
+    h.zalo.poll()
+    assert h.mediator.types.count("BrowserDied") == 1
+    assert h.zalo._tool_scrolled  # a timed-out scroll may have moved the list: check again next poll
+    h.zalo.poll()
+    assert h.driver.scrolls[0] == "bottom" and not h.zalo._tool_scrolled
 
 
 def test_scroll_step_defaults_when_client_height_unknown(repo: MessagesRepo) -> None:
