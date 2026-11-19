@@ -182,11 +182,14 @@ class BrowserDriver:
         value = self.eval_json(js)
         if not isinstance(value, dict):
             raise EvalError(f"scroll container {self.scroller_selector!r} not found")
-        return ScrollPosition(
-            scroll_top=float(value["scroll_top"]),
-            scroll_height=float(value["scroll_height"]),
-            client_height=float(value["client_height"]),
-        )
+        try:
+            return ScrollPosition(
+                scroll_top=float(value["scroll_top"]),
+                scroll_height=float(value["scroll_height"]),
+                client_height=float(value["client_height"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EvalError(f"scroll container {self.scroller_selector!r} returned an unexpected shape") from exc
 
     def scroll_messages(self, dy: int) -> ScrollPosition:
         """Scroll the message list by `dy` pixels (negative = up). The only UI action besides reading [R1.4]."""

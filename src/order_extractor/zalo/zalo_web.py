@@ -16,6 +16,10 @@ Scroll-back guarantee [R2.4, NFR1]: once backfill scrolls the list up, `_tool_sc
 `scroll_to_bottom()` succeeds. Backfill scrolls back on every exit path (try/finally), and if that fails the next
 `poll()` scrolls to the bottom before reading. Tool-initiated scrolling never counts as the human scrolling up.
 
+A scroll call that fails with `EvalError` (the scroll container selector no longer matches) is selector drift,
+not a dead browser [R2.9]: it is reported as `SelectorDrift`, the backfill stops, and nothing is relaunched.
+`BrowserError`/`BrowserTimeout` from a scroll stay on the relaunch path [R1.5].
+
 Messages are committed before `NewMessages` is emitted (persist before notify).
 """
 
@@ -41,7 +45,7 @@ from order_extractor.events import (
     ZaloReady,
 )
 from order_extractor.telemetry import get_logger
-from order_extractor.zalo.browser import BrowserError, Driver
+from order_extractor.zalo.browser import BrowserError, Driver, EvalError
 from order_extractor.zalo.messages_repo import ConversationRow, MessagesRepo
 from order_extractor.zalo.reader import PageState, ReaderMessage
 
@@ -51,6 +55,7 @@ RECOVER_CHUNK = 100
 BACKFILL_WAIT_SECONDS = 0.8
 DEFAULT_SCROLL_PX = 600
 MIN_SCROLL_PX = 100
+SCROLLER_MISSING = "scroll container not found"
 DAY_MS = 86_400_000
 
 
@@ -204,7 +209,12 @@ class ZaloWeb(Colleague):
                 if reason:
                     break
                 self._tool_scrolled = True  # before the call: a timed-out scroll may still have moved the list
-                self.driver.scroll_messages(-self._viewport(state))
+                try:
+                    self.driver.scroll_messages(-self._viewport(state))
+                except EvalError:
+                    self._drift(SCROLLER_MISSING)  # selector drift, not a dead browser: no relaunch [R2.9]
+                    reason = "scroll_container_missing"
+                    break
                 self.sleep(BACKFILL_WAIT_SECONDS)
                 next_state = self._read()
                 if next_state is None:
@@ -229,9 +239,15 @@ class ZaloWeb(Colleague):
         return gathered
 
     def _scroll_back(self, *, report: bool = True) -> bool:
-        """Return the list to the bottom after tool scrolling; clears `_tool_scrolled` only on success [R2.4]."""
+        """Return the list to the bottom after tool scrolling; clears `_tool_scrolled` only on success [R2.4].
+
+        Returns False only when the browser failed (the caller stops); a missing scroll container is reported as
+        drift and reading goes on."""
         try:
             self.driver.scroll_to_bottom()
+        except EvalError:
+            self._drift(SCROLLER_MISSING)
+            return True
         except BrowserError as exc:
             if report:
                 self._browser_failed(exc)

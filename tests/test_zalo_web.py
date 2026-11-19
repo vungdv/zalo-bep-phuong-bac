@@ -23,7 +23,7 @@ from order_extractor.events import (
     SelectorDrift,
     ZaloReady,
 )
-from order_extractor.zalo.browser import BrowserError, BrowserTimeout
+from order_extractor.zalo.browser import BrowserError, BrowserTimeout, EvalError
 from order_extractor.zalo.messages_repo import MessagesRepo
 from order_extractor.zalo.zalo_web import ZaloWeb, epoch_ms
 
@@ -591,6 +591,46 @@ def test_scroll_up_failure_with_a_failing_scroll_back_reports_once(repo: Message
     assert h.zalo._tool_scrolled  # a timed-out scroll may have moved the list: check again next poll
     h.zalo.poll()
     assert h.driver.scrolls[0] == "bottom" and not h.zalo._tool_scrolled
+
+
+def test_missing_scroll_container_during_backfill_is_drift_not_browser_death(repo: MessagesRepo) -> None:
+    chat = chat_of(12)
+    h = Harness(repo, chat)
+    h.driver.fail_scroll(EvalError("scroll container '#x' not found"), kind="any", times=2)
+    h.zalo.poll()
+    assert "BrowserDied" not in h.mediator.types
+    assert h.driver.consecutive_failures == 0 and h.driver.opened == 0  # no relaunch
+    drift = h.mediator.of_type(SelectorDrift)
+    assert [d.reason for d in drift] == ["scroll container not found"]  # scroll-back drift is rate limited
+    assert h.zalo.conversation is not None  # the conversation stays open; live reading goes on
+    assert len(h.stored()) == 5  # first screen only: the backfill stopped
+    chat.append(bubble(500_000))
+    h.zalo.poll()  # the scroll-back now succeeds, then the new bubble is read
+    assert "500000_1001" in h.stored() and not h.zalo._tool_scrolled
+
+
+def test_missing_scroll_container_at_poll_start_still_reads(repo: MessagesRepo) -> None:
+    chat = chat_of(12)
+    h = Harness(repo, chat)
+    h.driver.fail_scroll(BrowserTimeout("t"), kind="bottom")
+    h.zalo.poll()  # backfill; its scroll-back times out → BrowserDied, flag kept
+    h.driver.fail_scroll(EvalError("scroll container '#x' not found"), kind="bottom")
+    chat.to_bottom()
+    chat.append(bubble(500_000))
+    h.zalo.poll()
+    assert h.mediator.types.count("BrowserDied") == 1
+    assert h.mediator.of_type(SelectorDrift)[-1].reason == "scroll container not found"
+    assert "500000_1001" in h.stored()
+    assert not h.zalo.was_scrolled_up
+
+
+def test_scroll_timeout_during_backfill_stays_on_the_relaunch_path(repo: MessagesRepo) -> None:
+    h = Harness(repo, chat_of(12))
+    h.driver.fail_scroll(BrowserTimeout("timed out"), kind="up")
+    h.zalo.poll()
+    assert h.mediator.types[-1] == "BrowserDied"
+    assert "SelectorDrift" not in h.mediator.types
+    assert h.driver.consecutive_failures == 1
 
 
 def test_scroll_step_defaults_when_client_height_unknown(repo: MessagesRepo) -> None:

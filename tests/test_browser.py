@@ -171,3 +171,8 @@ def test_scroll_to_bottom(tmp_path: Path) -> None:
 def test_scroll_without_container_is_eval_error(tmp_path: Path) -> None:
     with pytest.raises(EvalError, match="not found"):
         make(FakeRunner("null"), tmp_path).scroll_messages(-100)
+
+
+def test_scroll_with_unexpected_shape_is_eval_error(tmp_path: Path) -> None:
+    with pytest.raises(EvalError, match="unexpected shape"):
+        make(FakeRunner(json.dumps({"scroll_top": 1})), tmp_path).scroll_to_bottom()
